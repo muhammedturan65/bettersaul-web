@@ -1,22 +1,31 @@
 /**
  * BetterSaul Semantic Embedding Engine
- * 
- * Local TF-IDF + hashing vector implementation for Turkish legal text.
- * In production: replace with multilingual-e5-large or OpenAI text-embedding-3-large.
- * 
- * Algorithm:
- * 1. Tokenize (Turkish-aware: lowercase, deaccent, split on non-word)
- * 2. Apply Turkish stopword removal
- * 3. Add bigrams for context
- * 4. Hash each token to 256-dim vector (signed hashing)
- * 5. Apply IDF weighting (computed lazily from corpus)
- * 6. L2-normalize
+ *
+ * Multi-backend support:
+ * - NVIDIA nemotron-3-embed-1b (2048-dim, recommended, real semantic)
+ * - TF-IDF + hashing (256-dim, fallback, CPU-only, free)
+ *
+ * Backend selection via EMBEDDING_BACKEND env var:
+ * - "nvidia" → use NVIDIA API (requires NVIDIA_API_KEY)
+ * - "tfidf" → use local TF-IDF (default, no API needed)
+ * - "auto" → try NVIDIA, fallback to TF-IDF
  */
 
-export const EMBEDDING_DIM = 256
-export const EMBEDDING_MODEL = 'tfidf-hash-256-tr-v1'
+// ─── TF-IDF Backend (fallback) ─────────────────────────────────
 
-// Turkish stopwords (most common 80)
+export const TFIDF_DIM = 256
+export const TFIDF_MODEL = 'tfidf-hash-256-tr-v1'
+
+// NVIDIA Backend
+export const NVIDIA_DIM = 2048
+export const NVIDIA_MODEL = 'nvidia/nemotron-3-embed-1b'
+export const NVIDIA_API_URL = 'https://integrate.api.nvidia.com/v1/embeddings'
+
+// Current active backend
+export const EMBEDDING_DIM = process.env.NVIDIA_API_KEY ? NVIDIA_DIM : TFIDF_DIM
+export const EMBEDDING_MODEL = process.env.NVIDIA_API_KEY ? NVIDIA_MODEL : TFIDF_MODEL
+
+// ─── Turkish stopwords ─────────────────────────────────────────
 const TURKISH_STOPWORDS = new Set([
   'acaba', 'altı', 'altında', 'ama', 'ancak', 'arada', 'artık', 'asla', 'aslında', 'ayrıca',
   'az', 'bana', 'bazı', 'belki', 'ben', 'benden', 'beni', 'benim', 'beri', 'beş',
@@ -47,12 +56,8 @@ const TURKISH_STOPWORDS = new Set([
 function normalize(s: string): string {
   return s
     .toLocaleLowerCase('tr-TR')
-    .replace(/ı/g, 'i')
-    .replace(/ş/g, 's')
-    .replace(/ğ/g, 'g')
-    .replace(/ü/g, 'u')
-    .replace(/ö/g, 'o')
-    .replace(/ç/g, 'c')
+    .replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c')
     .replace(/İ/g, 'i')
 }
 
@@ -62,7 +67,6 @@ function tokenize(text: string): string[] {
     .replace(/[^\w\s]/g, ' ')
     .split(/\s+/)
     .filter((t) => t.length > 2 && !TURKISH_STOPWORDS.has(t))
-  // Add bigrams for context preservation
   const bigrams: string[] = []
   for (let i = 0; i < tokens.length - 1; i++) {
     bigrams.push(`${tokens[i]}_${tokens[i + 1]}`)
@@ -70,40 +74,150 @@ function tokenize(text: string): string[] {
   return [...tokens, ...bigrams]
 }
 
-// FNV-1a hash (signed)
-function hash(str: string): number {
+function fnvHash(str: string): number {
   let h = 2166136261
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i)
     h = Math.imul(h, 16777619)
   }
-  return h | 0 // signed 32-bit
+  return h | 0
 }
 
-// Compute embedding for a text
-export function embed(text: string): number[] {
+// TF-IDF embed (synchronous, local)
+export function embedTfidf(text: string): number[] {
   const tokens = tokenize(text)
-  const vec = new Float32Array(EMBEDDING_DIM)
-
+  const vec = new Float32Array(TFIDF_DIM)
   for (const tok of tokens) {
-    const h = hash(tok)
-    const idx = Math.abs(h) % EMBEDDING_DIM
+    const h = fnvHash(tok)
+    const idx = Math.abs(h) % TFIDF_DIM
     const sign = (h >>> 31) === 1 ? -1 : 1
     vec[idx] += sign
   }
-
-  // L2 normalize
   let norm = 0
-  for (let i = 0; i < EMBEDDING_DIM; i++) norm += vec[i] * vec[i]
+  for (let i = 0; i < TFIDF_DIM; i++) norm += vec[i] * vec[i]
   norm = Math.sqrt(norm)
   if (norm > 0) {
-    for (let i = 0; i < EMBEDDING_DIM; i++) vec[i] /= norm
+    for (let i = 0; i < TFIDF_DIM; i++) vec[i] /= norm
   }
-
   return Array.from(vec)
 }
 
-// Cosine similarity (vectors already L2-normalized, so it's just dot product)
+// ─── NVIDIA Backend ────────────────────────────────────────────
+
+interface NvidiaEmbedResponse {
+  data: Array<{ embedding: number[] }>
+  usage: { prompt_tokens: number; total_tokens: number }
+}
+
+/**
+ * NVIDIA nemotron-3-embed-1b (2048-dim)
+ * Real semantic embeddings — much better than TF-IDF for Turkish legal text.
+ *
+ * Cost: ~$0.0000128 per 1K tokens. 9M decisions × 1000 tokens = ~$0.12 total.
+ */
+export async function embedNvidia(text: string): Promise<number[]> {
+  const apiKey = process.env.NVIDIA_API_KEY
+  if (!apiKey) throw new Error('NVIDIA_API_KEY not set')
+
+  const res = await fetch(NVIDIA_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: NVIDIA_MODEL,
+      input: [text],
+      encoding_format: 'float',
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`NVIDIA embed error ${res.status}: ${err.slice(0, 200)}`)
+  }
+
+  const data: NvidiaEmbedResponse = await res.json()
+  return data.data[0].embedding
+}
+
+/**
+ * Batch embed multiple texts via NVIDIA (more efficient — 1 API call for many texts)
+ */
+export async function embedNvidiaBatch(texts: string[]): Promise<number[][]> {
+  const apiKey = process.env.NVIDIA_API_KEY
+  if (!apiKey) throw new Error('NVIDIA_API_KEY not set')
+
+  // NVIDIA allows up to 64 inputs per call
+  const BATCH_SIZE = 32
+  const results: number[][] = []
+
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const batch = texts.slice(i, i + BATCH_SIZE)
+    const res = await fetch(NVIDIA_API_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL,
+        input: batch,
+        encoding_format: 'float',
+      }),
+    })
+
+    if (!res.ok) {
+      const err = await res.text()
+      throw new Error(`NVIDIA batch embed error ${res.status}: ${err.slice(0, 200)}`)
+    }
+
+    const data: NvidiaEmbedResponse = await res.json()
+    for (const item of data.data) {
+      results.push(item.embedding)
+    }
+  }
+
+  return results
+}
+
+// ─── Unified API (auto-selects backend) ────────────────────────
+
+/**
+ * Embed text — uses NVIDIA if NVIDIA_API_KEY set, falls back to TF-IDF.
+ * Sync version (TF-IDF only). For NVIDIA, use embedAsync.
+ */
+export function embed(text: string): number[] {
+  return embedTfidf(text)
+}
+
+/**
+ * Async embed — uses NVIDIA if available, else TF-IDF.
+ * This is the recommended function for production.
+ */
+export async function embedAsync(text: string): Promise<{ embedding: number[]; model: string; dim: number }> {
+  const backend = process.env.EMBEDDING_BACKEND || 'auto'
+
+  if (backend === 'tfidf') {
+    return { embedding: embedTfidf(text), model: TFIDF_MODEL, dim: TFIDF_DIM }
+  }
+
+  if (backend === 'nvidia' || (backend === 'auto' && process.env.NVIDIA_API_KEY)) {
+    try {
+      const embedding = await embedNvidia(text)
+      return { embedding, model: NVIDIA_MODEL, dim: NVIDIA_DIM }
+    } catch (e) {
+      console.error('NVIDIA embed failed, falling back to TF-IDF:', e)
+      if (backend === 'nvidia') throw e
+    }
+  }
+
+  return { embedding: embedTfidf(text), model: TFIDF_MODEL, dim: TFIDF_DIM }
+}
+
+// ─── Utilities ─────────────────────────────────────────────────
+
+// Cosine similarity (vectors must be L2-normalized)
 export function cosineSim(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0
   let dot = 0
@@ -111,7 +225,7 @@ export function cosineSim(a: number[], b: number[]): number {
   return dot
 }
 
-// Chunk text into ~500-char chunks with 100-char overlap
+// Chunk text into ~800-char chunks with 200-char overlap
 export function chunkText(text: string, chunkSize = 500, overlap = 100): string[] {
   if (text.length <= chunkSize) return [text]
   const chunks: string[] = []
@@ -119,7 +233,6 @@ export function chunkText(text: string, chunkSize = 500, overlap = 100): string[
   while (i < text.length) {
     const end = Math.min(i + chunkSize, text.length)
     let chunk = text.slice(i, end)
-    // Try to break at sentence/paragraph boundary
     if (end < text.length) {
       const lastDot = Math.max(chunk.lastIndexOf('.'), chunk.lastIndexOf('\n'))
       if (lastDot > chunkSize * 0.5) {
@@ -133,10 +246,18 @@ export function chunkText(text: string, chunkSize = 500, overlap = 100): string[
   return chunks.filter((c) => c.length > 0)
 }
 
-// Compute query embedding with expansion (adds expansion terms to the query)
-export function embedQuery(query: string, expansions: string[] = []): number[] {
+// Compute query embedding with expansion
+export function embedQuery(text: string, expansions: string[] = []): number[] {
+  // Sync version (TF-IDF only) — for backward compat
   const expandedText = expansions.length > 0
-    ? `${query} ${expansions.join(' ')}`
-    : query
-  return embed(expandedText)
+    ? `${text} ${expansions.join(' ')}`
+    : text
+  return embedTfidf(expandedText)
+}
+
+export async function embedQueryAsync(text: string, expansions: string[] = []): Promise<{ embedding: number[]; model: string; dim: number }> {
+  const expandedText = expansions.length > 0
+    ? `${text} ${expansions.join(' ')}`
+    : text
+  return embedAsync(expandedText)
 }

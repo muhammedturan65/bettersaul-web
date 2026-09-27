@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
-import { embed, embedQuery, cosineSim } from '@/lib/legal-engine/embeddings'
+import { embedTfidf, embedAsync, embedQueryAsync, cosineSim, TFIDF_DIM, NVIDIA_DIM, EMBEDDING_MODEL } from '@/lib/legal-engine/embeddings'
 import { expandQuery } from '@/lib/legal-engine/mcp-tools'
 
 export const dynamic = 'force-dynamic'
@@ -46,8 +46,11 @@ export async function POST(req: NextRequest) {
       orderBy: { decisionDate: 'desc' },
     })
 
-    // Compute query embedding (with expansions)
-    const queryEmb = embedQuery(query, expandedArr)
+    // Compute query embedding (async — uses NVIDIA if available)
+    const queryEmbResult = await embedQueryAsync(query, expandedArr)
+    const queryEmb = queryEmbResult.embedding
+    const isNvidia = queryEmbResult.model.startsWith('nvidia/')
+    const queryDim = queryEmbResult.dim
 
     // Score each decision
     const scored = allDecisions.map((d) => {
@@ -78,12 +81,19 @@ export async function POST(req: NextRequest) {
       if (d.embedding) {
         try {
           dEmb = JSON.parse(d.embedding)
-          semanticScore = cosineSim(queryEmb, dEmb)
+          // Only compare if dimensions match
+          if (dEmb.length === queryDim) {
+            semanticScore = cosineSim(queryEmb, dEmb)
+          } else if (isNvidia) {
+            // Query is NVIDIA (2048) but decision is TF-IDF (256) — live embed
+            const liveEmb = embedTfidf(`${d.title} ${d.summary} ${d.fullText}`.slice(0, 2000))
+            semanticScore = cosineSim(embedTfidf(`${query} ${expandedArr.join(' ')}`), liveEmb)
+          }
         } catch {}
       }
       // Fallback: compute on-the-fly if no stored embedding
-      if (!dEmb) {
-        const liveEmb = embed(`${d.title} ${d.summary} ${d.fullText}`.slice(0, 2000))
+      if (!dEmb && !isNvidia) {
+        const liveEmb = embedTfidf(`${d.title} ${d.summary} ${d.fullText}`.slice(0, 2000))
         semanticScore = cosineSim(queryEmb, liveEmb)
       }
 
@@ -133,7 +143,8 @@ export async function POST(req: NextRequest) {
       results,
       durationMs: Date.now() - startTime,
       searchType,
-      embeddingModel: 'tfidf-hash-256-tr-v1',
+      embeddingModel: queryEmbResult.model,
+      embeddingDim: queryDim,
     })
   } catch (error) {
     console.error('Search API error:', error)

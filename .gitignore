@@ -78,3 +78,4 @@ deploy.env
 /scripts/cover.pdf
 /scripts/body.pdf
 /scripts/diagrams/
+.nvidia.env

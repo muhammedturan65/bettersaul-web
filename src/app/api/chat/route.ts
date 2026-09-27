@@ -158,6 +158,40 @@ function normalize(s: string): string {
     .replace(/ç/g, 'c')
 }
 
+/**
+ * NVIDIA Nemotron 3 Super 120B — chat fallback
+ * Used when Z.ai is unavailable.
+ */
+async function callNvidiaChat(systemPrompt: string, userMessage: string): Promise<string> {
+  const apiKey = process.env.NVIDIA_API_KEY
+  if (!apiKey) throw new Error('NVIDIA_API_KEY not set')
+
+  const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'nvidia/nemotron-3-super-120b-a12b',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage },
+      ],
+      temperature: 0.3,
+      max_tokens: 1200,
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`NVIDIA chat error ${res.status}: ${err.slice(0, 200)}`)
+  }
+
+  const data = await res.json()
+  return data.choices[0]?.message?.content || ''
+}
+
 function findKnowledgeBaseMatch(message: string) {
   const norm = normalize(message)
   let best: { answer: string; citations: any[]; score: number } | null = null
@@ -203,38 +237,44 @@ export async function POST(req: NextRequest) {
       content = kbMatch.answer
       citations = kbMatch.citations
     } else {
-      // 3. Use Z.ai for general legal questions
+      // 3. Try AI providers: Z.ai first, NVIDIA as fallback
+      const context = relevantDecisions
+        .map((d) => `KARAR: ${d.court} ${d.courtChamber || ''} - ${d.decisionNumber || ''}\nÖZET: ${d.summary}\n`)
+        .join('\n')
+
+      const userPrompt = `${message}\n\nİlgili içtihatlar:\n${context || 'Bu konuda indekslenmiş karar bulunamadı.'}`
+
+      // Try Z.ai first
       try {
         const zai = await ZAI.create()
-        const context = relevantDecisions
-          .map((d) => `KARAR: ${d.court} ${d.courtChamber || ''} - ${d.decisionNumber || ''}\nÖZET: ${d.summary}\n`)
-          .join('\n')
-
         const completion = await zai.chat.completions.create({
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
-            {
-              role: 'user',
-              content: `${message}\n\nİlgili içtihatlar:\n${context || 'Bu konuda indekslenmiş karar bulunamadı.'}`,
-            },
+            { role: 'user', content: userPrompt },
           ],
           temperature: 0.3,
           max_tokens: 1200,
         })
-
-        content = completion.choices[0]?.message?.content || 'Üzgünüm, yanıt üretilemedi.'
-        citations = relevantDecisions.slice(0, 3).map((d) => ({
-          source: d.court?.toLocaleLowerCase('tr-TR').includes('yargıtay') ? 'yargitay' :
-                  d.court?.toLocaleLowerCase('tr-TR').includes('danıştay') ? 'danistay' :
-                  d.court?.toLocaleLowerCase('tr-TR').includes('anayasa') ? 'aym' : 'decision',
-          ref: `${d.court} ${d.courtChamber || ''} ${d.decisionNumber || ''}`.trim(),
-          verified: true,
-        }))
-      } catch (err) {
-        console.error('ZAI error:', err)
-        content = `Bu konuda indekslenmiş özel bir kaynak bulamadım. Sorunuz genel hukuki bir soru olarak değerlendirildi.\n\n**Öneri:** Daha spesifik bir soru sorarak (örn: "işe iade davası süreleri", "anlaşmalı boşanma protokolü içeriği") daha doğru bir yanıt alabilirsiniz.\n\nBir avukata danışmanızı öneririm.`
-        citations = []
+        content = completion.choices[0]?.message?.content || ''
+        if (!content) throw new Error('Empty Z.ai response')
+      } catch (zaiErr) {
+        console.error('Z.ai failed, trying NVIDIA:', zaiErr)
+        // Fallback to NVIDIA
+        try {
+          content = await callNvidiaChat(SYSTEM_PROMPT, userPrompt)
+        } catch (nvidiaErr) {
+          console.error('NVIDIA also failed:', nvidiaErr)
+          content = `Bu konuda indekslenmiş özel bir kaynak bulamadım. Sorunuz genel hukuki bir soru olarak değerlendirildi.\n\n**Öneri:** Daha spesifik bir soru sorarak (örn: "işe iade davası süreleri", "anlaşmalı boşanma protokolü içeriği") daha doğru bir yanıt alabilirsiniz.\n\nBir avukata danışmanızı öneririm.`
+        }
       }
+
+      citations = relevantDecisions.slice(0, 3).map((d) => ({
+        source: d.court?.toLocaleLowerCase('tr-TR').includes('yargıtay') ? 'yargitay' :
+                d.court?.toLocaleLowerCase('tr-TR').includes('danıştay') ? 'danistay' :
+                d.court?.toLocaleLowerCase('tr-TR').includes('anayasa') ? 'aym' : 'decision',
+        ref: `${d.court} ${d.courtChamber || ''} ${d.decisionNumber || ''}`.trim(),
+        verified: true,
+      }))
     }
 
     // Tool steps (simulated transparency)
