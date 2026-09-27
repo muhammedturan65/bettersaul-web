@@ -51,4 +51,30 @@ prompt
 
 server.log
 # Skills directory
+/skills/.deploy.env
+
+# Deploy credentials (NEVER commit)
+.deploy.env
+deploy.env
+
+
+# BetterSaul-specific (web repo)
+/legacy/
+/download/
 /skills/
+/tool-results/
+/worklog.md
+/.zscripts/
+/upload/
+/scripts/seed.js
+/scripts/make-admin.js
+/scripts/test-reindex.js
+/scripts/cleanup-imports.js
+/scripts/db-stats.js
+/scripts/build_body_part1.py
+/scripts/merge_pdf.py
+/scripts/pdf_to_png.py
+/scripts/cover.html
+/scripts/cover.pdf
+/scripts/body.pdf
+/scripts/diagrams/
