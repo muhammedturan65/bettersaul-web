@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, Suspense } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Scale, Mail, Lock, ArrowRight, AlertCircle, Sparkles } from 'lucide-react'
@@ -10,6 +10,27 @@ import { Input } from '@/components/ui/input'
 import Link from 'next/link'
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginLoading />}>
+      <LoginForm />
+    </Suspense>
+  )
+}
+
+function LoginLoading() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="text-center">
+        <div className="inline-flex w-12 h-12 rounded-xl brass-bar items-center justify-center mb-3 shadow-md animate-pulse">
+          <Scale className="w-6 h-6 text-sidebar" />
+        </div>
+        <div className="text-sm text-muted-foreground">Yükleniyor...</div>
+      </div>
+    </div>
+  )
+}
+
+function LoginForm() {
   const router = useRouter()
   const params = useSearchParams()
   const [email, setEmail] = useState('demo@bettersaul.legal')
