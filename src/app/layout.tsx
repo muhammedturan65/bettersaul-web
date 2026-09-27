@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+import { Providers } from "@/components/providers";
 
 const interSans = Inter({
   variable: "--font-geist-sans",
@@ -21,9 +22,7 @@ export const metadata: Metadata = {
   description: "AI destekli Türkiye hukuk kaynakları araştırma ve dilekçe üretim platformu. Semantic search, içtihat analizi, otomatik dilekçe oluşturma.",
   keywords: ["hukuk", "legal", "AI", "içtihat", "dilekçe", "Yargıtay", "Danıştay", "AYM", "semantic search"],
   authors: [{ name: "BetterSaul" }],
-  icons: {
-    icon: "/favicon.ico",
-  },
+  icons: { icon: "/favicon.ico" },
   openGraph: {
     title: "BetterSaul — Legal Intelligence Platform",
     description: "AI destekli hukuk araştırma ve dilekçe platformu",
@@ -41,8 +40,10 @@ export default function RootLayout({
       <body
         className={`${interSans.variable} ${plexMono.variable} antialiased bg-background text-foreground`}
       >
-        {children}
-        <Toaster />
+        <Providers>
+          {children}
+          <Toaster />
+        </Providers>
       </body>
     </html>
   );

@@ -66,7 +66,7 @@ const STATUS_CONFIG: Record<string, { label: string; icon: typeof Clock; color: 
   exported: { label: 'Dışa aktarıldı', icon: FileText, color: 'text-amber-600' },
 }
 
-export function PetitionsView() {
+export function PetitionsView({ onNew }: { onNew?: () => void }) {
   const [petitions, setPetitions] = useState<Petition[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Petition | null>(null)
@@ -100,7 +100,13 @@ export function PetitionsView() {
           <h2 className="text-xl font-bold tracking-tight">Dilekçeler</h2>
           <p className="text-sm text-muted-foreground">Toplam {petitions.length} dilekçe</p>
         </div>
-        <Button onClick={() => setShowNew(!showNew)} className="brass-bar text-sidebar hover:opacity-90 font-semibold">
+        <Button
+          onClick={() => {
+            if (onNew) onNew()
+            else setShowNew(!showNew)
+          }}
+          className="brass-bar text-sidebar hover:opacity-90 font-semibold"
+        >
           <Plus className="w-4 h-4 mr-1.5" />
           Yeni Dilekçe
         </Button>

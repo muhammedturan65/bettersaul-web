@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
+import { embed, embedQuery, cosineSim } from '@/lib/legal-engine/embeddings'
+import { expandQuery } from '@/lib/legal-engine/mcp-tools'
 
 export const dynamic = 'force-dynamic'
 
@@ -9,38 +11,12 @@ interface SearchBody {
   searchType?: 'semantic' | 'keyword' | 'hybrid'
 }
 
-// Simple Turkish text normalization for keyword search
 function normalize(s: string): string {
   return s
     .toLocaleLowerCase('tr-TR')
-    .replace(/ı/g, 'i')
-    .replace(/ş/g, 's')
-    .replace(/ğ/g, 'g')
-    .replace(/ü/g, 'u')
-    .replace(/ö/g, 'o')
-    .replace(/ç/g, 'c')
-    .replace(/[^\w\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-// Mock query expansion (in production: LLM-based)
-function expandQuery(query: string): string[] {
-  const expansions: Record<string, string[]> = {
-    'guvenlik sorusturmasi': ['arşiv araştırması', 'kamu görevine atanma', 'memuriyet', 'ölçülülük', 'özel hayat'],
-    'ise iade': ['feshin geçersizliği', 'iş sözleşmesi', 'geçerli sebep', 'kıdem tazminatı', 'ihbar tazminatı'],
-    'anlasmali bosanma': ['TMK 166', 'boşanma protokolü', 'velayet', 'mal paylaşımı'],
-    'tuketici kredisi': ['faiz oranı', '6502 sayılı kanun', 'sözleşme iptali', 'tüketicinin korunması'],
-    'is sozlesmesi fesih': ['işe iade', 'feshin geçerli sebebi', '4857 sayılı kanun', 'kıdem'],
-  }
-  const q = normalize(query)
-  for (const key in expansions) {
-    if (q.includes(key)) {
-      return expansions[key]
-    }
-  }
-  // Default expansion: synonyms from the query itself
-  return q.split(' ').filter((w) => w.length > 3).slice(0, 5)
+    .replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c')
+    .replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
 export async function POST(req: NextRequest) {
@@ -54,7 +30,8 @@ export async function POST(req: NextRequest) {
 
   try {
     const normalizedQuery = normalize(query)
-    const expanded = expandQuery(query)
+    const expanded = await expandQuery({ query })
+    const expandedArr = expanded.data || []
 
     // Build where clause
     const where: any = {}
@@ -62,14 +39,17 @@ export async function POST(req: NextRequest) {
       where.court = { contains: court }
     }
 
-    // Get all candidate decisions (in production: pgvector + BM25)
+    // Get all candidate decisions
     const allDecisions = await db.legalDecision.findMany({
       where,
       take: 100,
       orderBy: { decisionDate: 'desc' },
     })
 
-    // Score each decision based on search type
+    // Compute query embedding (with expansions)
+    const queryEmb = embedQuery(query, expandedArr)
+
+    // Score each decision
     const scored = allDecisions.map((d) => {
       let semanticScore = 0
       let keywordScore = 0
@@ -85,29 +65,29 @@ export async function POST(req: NextRequest) {
         if (summaryNorm.includes(term)) keywordScore += 2
         if (fullTextNorm.includes(term)) keywordScore += 1
       }
-
-      // Expansion match bonus
-      for (const exp of expanded) {
+      for (const exp of expandedArr) {
         const expNorm = normalize(exp)
-        if (titleNorm.includes(expNorm) || summaryNorm.includes(expNorm)) {
-          keywordScore += 2
-        }
+        if (titleNorm.includes(expNorm) || summaryNorm.includes(expNorm)) keywordScore += 2
         for (const kw of keywordsArr) {
-          if (normalize(kw).includes(expNorm)) {
-            keywordScore += 1.5
-          }
+          if (normalize(kw).includes(expNorm)) keywordScore += 1.5
         }
       }
 
-      // Semantic score (mock: use pre-set similarityScore + keyword alignment)
-      const baseSemantic = (d.similarityScore || 0.5)
-      const expansionBonus = expanded.reduce((acc, exp) => {
-        const expNorm = normalize(exp)
-        return acc + (fullTextNorm.includes(expNorm) ? 0.05 : 0)
-      }, 0)
-      semanticScore = Math.min(0.99, baseSemantic + expansionBonus)
+      // Semantic score (cosine similarity with stored embedding)
+      let dEmb: number[] | null = null
+      if (d.embedding) {
+        try {
+          dEmb = JSON.parse(d.embedding)
+          semanticScore = cosineSim(queryEmb, dEmb)
+        } catch {}
+      }
+      // Fallback: compute on-the-fly if no stored embedding
+      if (!dEmb) {
+        const liveEmb = embed(`${d.title} ${d.summary} ${d.fullText}`.slice(0, 2000))
+        semanticScore = cosineSim(queryEmb, liveEmb)
+      }
 
-      // Combined score (hybrid)
+      // Combined score
       const combinedScore =
         searchType === 'semantic' ? semanticScore :
         searchType === 'keyword' ? keywordScore / 10 :
@@ -116,17 +96,16 @@ export async function POST(req: NextRequest) {
       return {
         ...d,
         similarityScore: combinedScore,
-        _keywordScore: keywordScore,
         _semanticScore: semanticScore,
+        _keywordScore: keywordScore,
       }
     })
 
-    // Filter & sort
     const filtered = scored
       .filter((d) => {
         if (searchType === 'keyword') return d._keywordScore > 0
-        if (searchType === 'semantic') return d._semanticScore > 0.3
-        return d._keywordScore > 0 || d._semanticScore > 0.3
+        if (searchType === 'semantic') return d._semanticScore > 0.05
+        return d._keywordScore > 0 || d._semanticScore > 0.05
       })
       .sort((a, b) => (b.similarityScore || 0) - (a.similarityScore || 0))
       .slice(0, 20)
@@ -149,11 +128,12 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       query,
-      expandedQuery: expanded,
+      expandedQuery: expandedArr,
       total: results.length,
       results,
       durationMs: Date.now() - startTime,
       searchType,
+      embeddingModel: 'tfidf-hash-256-tr-v1',
     })
   } catch (error) {
     console.error('Search API error:', error)

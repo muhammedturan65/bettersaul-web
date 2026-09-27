@@ -1,24 +1,34 @@
 'use client'
 
-import { Menu, Bell, Search, Sparkles } from 'lucide-react'
+import { Menu, Bell, LogOut, Shield } from 'lucide-react'
+import { signOut } from 'next-auth/react'
 import { cn } from '@/lib/utils'
 
 interface TopbarProps {
   onMenuClick: () => void
   currentView: string
+  user: { name?: string | null; email: string; role: string }
 }
 
 const VIEW_LABELS: Record<string, { title: string; subtitle: string }> = {
   dashboard: { title: 'Dashboard', subtitle: 'Genel bakış ve hızlı işlemler' },
   search: { title: 'Hukuk Arama', subtitle: 'Semantic + keyword hybrid arama' },
   petitions: { title: 'Dilekçeler', subtitle: 'Oluştur, düzenle, versiyonla' },
+  'petition-new': { title: 'Yeni Dilekçe', subtitle: 'AI ile dilekçe üretim pipeline' },
   chat: { title: 'AI Asistan', subtitle: 'Kaynak gösteren hukuki sohbet' },
   research: { title: 'Araştırma Oturumları', subtitle: 'AI araştırma şeffaflığı' },
   documents: { title: 'Belgeler', subtitle: 'Dosya yükleme ve analiz' },
+  admin: { title: 'Admin Panel', subtitle: 'Import pipeline & kullanıcı yönetimi' },
 }
 
-export function Topbar({ onMenuClick, currentView }: TopbarProps) {
+export function Topbar({ onMenuClick, currentView, user }: TopbarProps) {
   const info = VIEW_LABELS[currentView] || VIEW_LABELS.dashboard
+  const initials = (user.name || user.email)
+    .split(' ')
+    .map((s) => s[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
 
   return (
     <header className="sticky top-0 z-30 bg-background/95 backdrop-blur-sm border-b border-border">
@@ -66,12 +76,19 @@ export function Topbar({ onMenuClick, currentView }: TopbarProps) {
 
           <div className="flex items-center gap-2 pl-2 ml-1 border-l border-border">
             <div className="hidden sm:block text-right leading-tight">
-              <div className="text-sm font-medium">Av. Mehmet Demir</div>
-              <div className="text-[10px] text-muted-foreground">Demir & Partners · Pro</div>
+              <div className="text-sm font-medium">{user.name || user.email}</div>
+              <div className="text-[10px] text-muted-foreground flex items-center gap-1 justify-end">
+                {user.role === 'admin' && <Shield className="w-2.5 h-2.5 text-accent" />}
+                {user.role}
+              </div>
             </div>
-            <div className="w-9 h-9 rounded-full brass-bar flex items-center justify-center text-sidebar font-bold text-sm shadow-sm">
-              MD
-            </div>
+            <button
+              onClick={() => signOut({ callbackUrl: '/login' })}
+              className="w-9 h-9 rounded-full brass-bar flex items-center justify-center text-sidebar font-bold text-sm shadow-sm hover:opacity-90"
+              title="Çıkış yap"
+            >
+              {initials}
+            </button>
           </div>
         </div>
       </div>

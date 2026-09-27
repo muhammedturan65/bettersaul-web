@@ -10,16 +10,21 @@ import {
   FolderOpen,
   Scale,
   X,
+  Settings,
+  LogOut,
+  Shield,
 } from 'lucide-react'
+import { signOut } from 'next-auth/react'
 import { cn } from '@/lib/utils'
 
-type View = 'dashboard' | 'search' | 'petitions' | 'chat' | 'research' | 'documents'
+type View = 'dashboard' | 'search' | 'petitions' | 'petition-new' | 'chat' | 'research' | 'documents' | 'admin'
 
 interface NavItem {
   id: View
   label: string
   icon: typeof LayoutDashboard
   description: string
+  adminOnly?: boolean
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -29,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'chat', label: 'AI Asistan', icon: MessageSquare, description: 'Kaynak gösteren sohbet' },
   { id: 'research', label: 'Araştırma', icon: GitBranch, description: 'Trace & oturumlar' },
   { id: 'documents', label: 'Belgeler', icon: FolderOpen, description: 'Yükle & analiz et' },
+  { id: 'admin', label: 'Admin', icon: Shield, description: 'Import & kullanıcılar', adminOnly: true },
 ]
 
 interface SidebarProps {
@@ -36,9 +42,12 @@ interface SidebarProps {
   onNavigate: (view: string) => void
   isOpen: boolean
   onClose: () => void
+  isAdmin?: boolean
 }
 
-export function Sidebar({ currentView, onNavigate, isOpen, onClose }: SidebarProps) {
+export function Sidebar({ currentView, onNavigate, isOpen, onClose, isAdmin }: SidebarProps) {
+  const items = NAV_ITEMS.filter((i) => !i.adminOnly || isAdmin)
+
   return (
     <>
       {isOpen && (
@@ -83,7 +92,7 @@ export function Sidebar({ currentView, onNavigate, isOpen, onClose }: SidebarPro
             <div className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-sidebar-foreground/45">
               Çalışma alanı
             </div>
-            {NAV_ITEMS.map((item) => {
+            {items.map((item) => {
               const Icon = item.icon
               const active = currentView === item.id
               return (
@@ -136,9 +145,16 @@ export function Sidebar({ currentView, onNavigate, isOpen, onClose }: SidebarPro
           </div>
         </ScrollArea>
 
-        <div className="px-4 py-3 border-t border-sidebar-border text-[10px] text-sidebar-foreground/50">
-          <div className="flex items-center justify-between">
-            <span>v1.0 · Phase 1</span>
+        <div className="px-3 py-3 border-t border-sidebar-border space-y-0.5">
+          <button
+            onClick={() => signOut({ callbackUrl: '/login' })}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 transition-colors"
+          >
+            <LogOut className="w-4 h-4" strokeWidth={2} />
+            Çıkış yap
+          </button>
+          <div className="px-3 pt-1 text-[10px] text-sidebar-foreground/50 flex items-center justify-between">
+            <span>v1.0 · Phase 2</span>
             <span className="text-mono-tabular">2026</span>
           </div>
         </div>

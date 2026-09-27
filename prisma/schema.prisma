@@ -159,22 +159,60 @@ model LegalDecision {
   decisionDate   DateTime?
   documentType   String?  // decision | ruling | verdict
   title          String?
-  fullText       String  
-  summary        String? 
+  fullText       String
+  summary        String?
   keywords       String?  // JSON array
   topics         String?  // JSON array
   citations      String?  // JSON array
   metadata       String?  // JSON
   similarityScore Float?  // for semantic search ranking (mock)
+  // Embedding fields (TF-IDF + hashing vector stored as JSON)
+  embedding      String?  // JSON array of 256 floats
+  embeddingModel String?  // "tfidf-hash-256-tr"
+  chunkCount     Int      @default(0)
   scrapedAt      DateTime @default(now())
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   source         LegalSource @relation(fields: [sourceId], references: [id])
+  chunks         LegalDecisionChunk[]
 
   @@index([sourceId, decisionDate])
   @@index([court, courtChamber])
   @@index([decisionNumber])
+}
+
+model LegalDecisionChunk {
+  id          String   @id @default(cuid())
+  decisionId  String
+  chunkIndex  Int
+  chunkText   String
+  embedding   String?  // JSON array of 256 floats
+  metadata    String?  // JSON
+  createdAt   DateTime @default(now())
+
+  decision    LegalDecision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+
+  @@unique([decisionId, chunkIndex])
+  @@index([decisionId])
+}
+
+model ImportJob {
+  id            String   @id @default(cuid())
+  sourceName    String   // yargitay | danistay | emsal | aym | resmi_gazete | mevzuat
+  status        String   @default("queued") // queued | running | completed | failed | paused
+  totalItems    Int      @default(0)
+  processedItems Int     @default(0)
+  failedItems   Int      @default(0)
+  startedAt     DateTime?
+  completedAt   DateTime?
+  errorMessage  String?
+  metadata      String?  // JSON
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([sourceName, status])
+  @@index([createdAt])
 }
 
 model Statute {
