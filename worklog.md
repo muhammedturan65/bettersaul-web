@@ -1693,3 +1693,55 @@ Mevcut sistemde **hiçbir semantic search yok** (diğer task'larda tespit edildi
 - **Önerilen mimari:** Next.js 16 + PostgreSQL + pgvector + Python FastAPI container + AI provider abstraction
 - **19 fazlık migration planı:** 5-7 ay tahmini süre
 - **Sprint 1:** 8 görev, 2-3 hafta (Next.js scaffold + DB + Python container + Auth + 18 MCP→REST + Dashboard + Search UI + PDF export)
+
+---
+
+## Task ID: 6 — BetterSaul Web Platform Implementation
+
+**Tarih:** 2026-09-27
+**Agent:** Main (Z.ai)
+**Task:** BetterSaul web platformunu Phase 1 olarak inşa et
+
+### Work Log:
+- `fullstack-dev` skill yüklendi, Next.js 16 + TypeScript + Prisma + shadcn/ui projesi initialize edildi
+- Prisma şema yazıldı: 17 tablo (User, Org, Case, Petition, PetitionVersion, PetitionReview, Citation, LegalSource, LegalDecision, Statute, StatuteArticle, ResearchSession, ResearchTrace, AiRun, ChatSession, ChatMessage, Document, DocumentChunk, AuditLog, ApiKey, OrganizationMember)
+- `bun run db:push` ile şema SQLite'a push edildi
+- Seed script yazıldı: demo user (Av. Mehmet Demir), org (Demir & Partners), 6 hukuk kaynağı, 8 örnek karar (Yargıtay 9HD işe iade, Yargıtay 2HD boşanma, Danıştay 5D güvenlik soruşturması, AYM ifade özgürlüğü, Yargıtay 3HD tüketici kredisi, Yargıtay 1HD kira tahliye, Danıştay 7D vergi, Yargıtay 13HD kıymetli evrak), 1 kanun (4857 İş Kanunu) + 6 madde, 2 dava, 2 dilekçe (1 iş + 1 boşanma) versiyonlarıyla, 1 chat oturumu, 1 araştırma oturumu (8 trace adımı)
+- Premium tema: Editorial hukuk teknolojisi estetiği (warm parchment + deep ink + brass accent, indigo/mavi yok), custom scrollbar, shimmer loading, grid-bg, brass-bar class
+- 6 ana view bileşeni oluşturuldu:
+  - **Dashboard**: hero CTA + 4 stat card + son dilekçeler/kaynak durumu/araştırmalar/indeksli kararlar
+  - **Search**: hybrid/semantic/keyword toggle + court filter + AI query expansion preview + sonuç kartları + detail panel
+  - **Petitions**: liste + 2-pane detail (dilekçe metni + 17-boyut kalite analizi)
+  - **Chat**: SSE streaming + tool steps transparency + citation badges + suggested questions
+  - **Research**: 2-pane oturum listesi + vertical timeline trace visualization
+  - **Documents**: upload zone + search + parse status
+- Sidebar (premium dark theme, brass logo) + Topbar (AI status pill, user avatar) layout
+- 5 API route oluşturuldu:
+  - `/api/dashboard` — aggregate stats
+  - `/api/legal/search` — hybrid search (keyword + mock semantic + query expansion)
+  - `/api/petitions` — list petitions with versions
+  - `/api/chat` — Z.ai SDK + knowledge base fallback + 4 ön-tanımlı konu (işe iade, güvenlik soruşturması, anlaşmalı boşanma, tüketici kredisi)
+  - `/api/research` — session traces
+  - `/api/documents` — list documents
+- Z.ai SDK entegre edildi (z-ai-web-dev-sdk), config /etc/.z-ai-config'den otomatik bulundu
+- ESLint hatasız geçti (sadece legacy adblock.js uyarıları, proje kodu temiz)
+- Agent Browser ile tüm view'lar test edildi:
+  - Dashboard: 2 dilekçe + 1 araştırma + 8 karar + 6 kaynak gösteriliyor ✓
+  - Search: "güvenlik soruşturması" sorgusu → 8 sonuç, 10ms, AI query expansion çalıştı ✓
+  - Petitions: 2 dilekçe listesi + tıklayınca detail panel (kalite 82/65, dilekçe metni, bulgular) ✓
+  - Chat: "İş sözleşmem sebepsiz feshedildi" → Z.ai yanıtı geldi ✓
+  - Research: 8 adımlı trace timeline gösteriliyor ✓
+  - Documents: upload zone + liste ✓
+- 5 screenshot alındı: dashboard, search, petitions, chat, research, mobile (390x844)
+- Mobile responsive test edildi (sidebar drawer, content stack)
+
+### Stage Summary:
+- **Çalışan web app:** http://localhost:3000
+- **Tech stack:** Next.js 16 + TypeScript + Tailwind 4 + shadcn/ui + Prisma (SQLite) + Z.ai SDK
+- **17 DB tablo** + 6 view bileşeni + 6 API route
+- **Premium hukuk teknolojisi tasarımı** (indigo/mavi yok, warm parchment + brass)
+- **AI chat çalışıyor** (Z.ai ile gerçek LLM çağrısı + knowledge base fallback + 4 Türkçe hukuk konusu)
+- **Hybrid search çalışıyor** (keyword + mock semantic scoring + query expansion)
+- **Research trace şeffaflık** (8 adımlı timeline: intent_detect → query_gen → search → semantic → rerank → verify → synthesize)
+- **Multi-tenant altyapı** (org + role + audit log şemada hazır)
+- **Hata yok**, lint temiz, browser test geçti

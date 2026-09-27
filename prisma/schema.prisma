@@ -1,0 +1,426 @@
+// BetterSaul Legal Intelligence Platform — Prisma Schema
+// Multi-tenant, audit-logged, versioned legal research & petition system
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AUTH & TENANT
+// ═══════════════════════════════════════════════════════════════
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String?
+  passwordHash  String
+  role          String   @default("user") // admin | lawyer | user | org_admin
+  barNo         String?  // avukat sicil no
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastLoginAt   DateTime?
+  deletedAt     DateTime?
+
+  memberships   OrganizationMember[]
+  petitions     Petition[]
+  researchSess  ResearchSession[]
+  chatSess      ChatSession[]
+  documents     Document[]
+  auditLogs     AuditLog[]
+  apiKeys       ApiKey[]
+  aiRuns        AiRun[]
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  plan      String   @default("free") // free | pro | enterprise
+  seatCount Int      @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members     OrganizationMember[]
+  cases       Case[]
+  petitions   Petition[]
+  documents   Document[]
+  researchSess ResearchSession[]
+}
+
+model OrganizationMember {
+  id        String   @id @default(cuid())
+  userId    String
+  orgId     String
+  role      String   @default("lawyer") // org_admin | lawyer | paralegal
+  createdAt DateTime @default(now())
+
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  keyHash    String    @unique
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  orgId      String?
+  action     String   // create_petition | search | export | login
+  entityType String?  // petition | case | document
+  entityId   String?
+  ipAddress  String?
+  userAgent  String?
+  metadata   String?  // JSON string
+  createdAt  DateTime @default(now())
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([entityType, entityId])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CASES & PARTIES
+// ═══════════════════════════════════════════════════════════════
+
+model Case {
+  id        String    @id @default(cuid())
+  orgId     String?
+  title     String
+  caseNo    String?
+  court     String?
+  track     String?   // iş | boşanma | idare | tüketici | ...
+  status    String    @default("open") // open | closed | archived
+  createdById String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  organization  Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  parties       CaseParty[]
+  petitions     Petition[]
+  documents     Document[]
+  researchSess  ResearchSession[]
+}
+
+model CaseParty {
+  id      String @id @default(cuid())
+  caseId  String
+  role    String // plaintiff | defendant | witness
+  name    String?
+  tckn    String?
+  address String?
+  metadata String? // JSON
+  case    Case   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// LEGAL SOURCES (mock data — production'da 9M+ karar)
+// ═══════════════════════════════════════════════════════════════
+
+model LegalSource {
+  id           String    @id @default(cuid())
+  name         String    @unique // yargitay | danistay | emsal | aym | resmi_gazete | mevzuat
+  label        String
+  baseUrl      String?
+  apiUrl       String?
+  lastSyncedAt DateTime?
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+
+  decisions LegalDecision[]
+  statutes  Statute[]
+}
+
+model LegalDecision {
+  id             String   @id @default(cuid())
+  sourceId       String
+  sourceDocId    String?  // portal-side unique ID
+  court          String?  // Yargıtay | Danıştay | Emsal
+  courtChamber   String?  // 9. HD | 10. HD | 5. D.
+  decisionNumber String?  // E.2024/123 K.2024/456
+  caseNumber     String?
+  decisionDate   DateTime?
+  documentType   String?  // decision | ruling | verdict
+  title          String?
+  fullText       String  
+  summary        String? 
+  keywords       String?  // JSON array
+  topics         String?  // JSON array
+  citations      String?  // JSON array
+  metadata       String?  // JSON
+  similarityScore Float?  // for semantic search ranking (mock)
+  scrapedAt      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  source         LegalSource @relation(fields: [sourceId], references: [id])
+
+  @@index([sourceId, decisionDate])
+  @@index([court, courtChamber])
+  @@index([decisionNumber])
+}
+
+model Statute {
+  id           String   @id @default(cuid())
+  sourceId     String?
+  name         String   // 4857 sayılı İş Kanunu
+  statuteNo    String?  // 4857
+  sourceUrl    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  source       LegalSource? @relation(fields: [sourceId], references: [id])
+  articles     StatuteArticle[]
+}
+
+model StatuteArticle {
+  id            String    @id @default(cuid())
+  statuteId     String
+  articleNo     String    // 18, 20/A
+  version       Int       @default(1)
+  title         String?
+  bodyText      String   
+  effectiveFrom DateTime?
+  effectiveTo   DateTime? // null = current
+  sourceUrl     String?
+  createdAt     DateTime  @default(now())
+
+  statute       Statute   @relation(fields: [statuteId], references: [id], onDelete: Cascade)
+
+  @@unique([statuteId, articleNo, version])
+  @@index([statuteId, effectiveTo])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PETITIONS
+// ═══════════════════════════════════════════════════════════════
+
+model Petition {
+  id                String   @id @default(cuid())
+  orgId             String?
+  caseId            String?
+  userId            String
+  petitionType      String?  // idare | bosanma | is | icra | tuketici | ...
+  track             String?  // detected legal track
+  currentVersionId  String?
+  status            String   @default("draft") // draft | reviewed | final | exported
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+
+  organization  Organization?    @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  case          Case?            @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions      PetitionVersion[]
+  reviews       PetitionReview[]
+  citations     Citation[]
+  researchSess  ResearchSession[]
+
+  @@index([orgId, userId, createdAt])
+  @@index([caseId])
+}
+
+model PetitionVersion {
+  id            String   @id @default(cuid())
+  petitionId    String
+  versionNo     Int
+  bodyText      String  
+  formData      String?  // JSON
+  qualityScore  Int?
+  qualityReport String?  // JSON
+  aiRunId       String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  petition      Petition @relation(fields: [petitionId], references: [id], onDelete: Cascade)
+  reviews       PetitionReview[]
+  citations     Citation[]
+
+  @@unique([petitionId, versionNo])
+  @@index([petitionId, versionNo])
+}
+
+model PetitionReview {
+  id                 String   @id @default(cuid())
+  petitionId         String
+  petitionVersionId  String
+  reviewType         String   // auto_regex | llm_judge | user
+  score              Int?
+  findings           String?  // JSON
+  reviewedById       String?
+  createdAt          DateTime @default(now())
+
+  petition           Petition        @relation(fields: [petitionId], references: [id], onDelete: Cascade)
+  petitionVersion    PetitionVersion @relation(fields: [petitionVersionId], references: [id], onDelete: Cascade)
+}
+
+model Citation {
+  id                 String   @id @default(cuid())
+  petitionId         String
+  petitionVersionId  String?
+  sourceType         String   // yargitay | danistay | aym | statute
+  sourceId           String?
+  citationText       String
+  pageRef            String?
+  verified           Boolean  @default(false)
+  metadata           String?  // JSON
+  createdAt          DateTime @default(now())
+
+  petition           Petition        @relation(fields: [petitionId], references: [id], onDelete: Cascade)
+  petitionVersion    PetitionVersion? @relation(fields: [petitionVersionId], references: [id], onDelete: SetNull)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RESEARCH SESSIONS (AI transparency)
+// ═══════════════════════════════════════════════════════════════
+
+model ResearchSession {
+  id          String    @id @default(cuid())
+  orgId       String?
+  userId      String
+  caseId      String?
+  petitionId  String?
+  query       String   
+  track       String?
+  status      String    @default("running") // running | completed | failed
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  case         Case?         @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  petition     Petition?     @relation(fields: [petitionId], references: [id], onDelete: SetNull)
+  traces       ResearchTrace[]
+  aiRuns       AiRun[]
+
+  @@index([userId, startedAt])
+}
+
+model ResearchTrace {
+  id           String    @id @default(cuid())
+  sessionId    String
+  stepOrder    Int
+  stepType     String   // intent_detect | query_gen | search | verify | synthesize
+  stepName     String
+  input        String?  // JSON
+  output       String?  // JSON
+  durationMs   Int?
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  session      ResearchSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, stepOrder])
+}
+
+model AiRun {
+  id           String    @id @default(cuid())
+  userId       String?
+  sessionId    String?
+  provider     String    // zai | openai | gemini | anthropic | ollama
+  model        String
+  inputTokens  Int?
+  outputTokens Int?
+  costUsd      Float?
+  durationMs   Int?
+  status       String    // success | error
+  errorMessage String?
+  createdAt    DateTime  @default(now())
+
+  user         User?            @relation(fields: [userId], references: [id], onDelete: SetNull)
+  session      ResearchSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CHAT
+// ═══════════════════════════════════════════════════════════════
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  title     String?
+  track     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model ChatMessage {
+  id          String   @id @default(cuid())
+  sessionId   String
+  role        String   // user | assistant | system | tool
+  content     String  
+  toolName    String?
+  toolArgs    String?  // JSON
+  toolResult  String?  // JSON
+  citations   String?  // JSON array
+  tokens      Int?
+  createdAt   DateTime @default(now())
+
+  session     ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DOCUMENTS (user uploads)
+// ═══════════════════════════════════════════════════════════════
+
+model Document {
+  id          String   @id @default(cuid())
+  orgId       String?
+  caseId      String?
+  userId      String
+  filename    String
+  mimeType    String?
+  sizeBytes   Int?
+  s3Key       String?
+  parsedText  String? 
+  parseStatus String   @default("pending") // pending | parsed | failed
+  source      String   @default("user_upload")
+  summary     String? 
+  metadata    String?  // JSON
+  createdAt   DateTime @default(now())
+
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  case         Case?         @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks       DocumentChunk[]
+
+  @@index([userId, createdAt])
+  @@index([caseId])
+}
+
+model DocumentChunk {
+  id          String   @id @default(cuid())
+  documentId  String
+  chunkIndex  Int
+  chunkText   String  
+  metadata    String?  // JSON
+  createdAt   DateTime @default(now())
+
+  document    Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+}
