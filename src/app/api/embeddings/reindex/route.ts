@@ -13,8 +13,13 @@ export async function POST() {
   }
   try {
     const result = await reindexEmbeddings()
-    return NextResponse.json({ ok: true, ...result })
+    return NextResponse.json({
+      ok: true,
+      ...result,
+      message: `${result.updated} kararın embedding'i hesaplandı (256-dim TF-IDF), ${result.skipped} atlandı`,
+    })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
 }
+

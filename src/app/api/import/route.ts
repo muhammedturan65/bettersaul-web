@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
   if (action === 'create') {
     if (!sourceName) return NextResponse.json({ error: 'sourceName gerekli' }, { status: 400 })
     // For demo: use small numbers (production would use SOURCE_SIZES)
-    const total = totalItems || (sourceName === 'mevzuat' ? 100 : sourceName === 'aym' ? 500 : 1000)
+    const total = totalItems || (sourceName === 'mevzuat' ? 30 : sourceName === 'aym' ? 50 : sourceName === 'resmi_gazete' ? 80 : 100)
     const job = createJob(sourceName, total)
     startJob(job.id)
     return NextResponse.json({ ok: true, job })

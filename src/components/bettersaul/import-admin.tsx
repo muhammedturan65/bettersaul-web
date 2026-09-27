@@ -58,7 +58,7 @@ export function ImportAdmin() {
   const [loading, setLoading] = useState(true)
   const [newSource, setNewSource] = useState('yargitay')
   const [reindexing, setReindexing] = useState(false)
-  const [reindexResult, setReindexResult] = useState<{ updated: number; total: number } | null>(null)
+  const [reindexResult, setReindexResult] = useState<{ updated: number; total: number; skipped: number; message?: string } | null>(null)
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
 
   async function refresh() {
@@ -199,7 +199,7 @@ export function ImportAdmin() {
         {reindexResult && (
           <div className="mt-3 px-3 py-2 rounded-md bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900 text-xs">
             <CheckCircle2 className="w-3.5 h-3.5 inline mr-1.5 text-emerald-600" />
-            {reindexResult.updated} / {reindexResult.total} karar indekslendi (TF-IDF + hashing v1)
+            {reindexResult.message || `${reindexResult.updated} / ${reindexResult.total} karar indekslendi (TF-IDF + hashing v1)`}
           </div>
         )}
       </Card>
