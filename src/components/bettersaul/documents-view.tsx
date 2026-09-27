@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Clock,
   AlertCircle,
+  Loader2,
 } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -40,16 +41,42 @@ export function DocumentsView() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadResult, setUploadResult] = useState<string>('')
 
-  useEffect(() => {
-    fetch('/api/documents')
-      .then((r) => r.json())
-      .then((d) => {
-        setDocuments(d.documents || [])
-        setLoading(false)
-      })
-      .catch(() => setLoading(false))
-  }, [])
+  async function refresh() {
+    try {
+      const res = await fetch('/api/documents')
+      const d = await res.json()
+      setDocuments(d.documents || [])
+    } catch {} finally { setLoading(false) }
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploading(true)
+    setUploadResult('')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await fetch('/api/documents/upload', { method: 'POST', body: formData })
+      const data = await res.json()
+      if (data.ok) {
+        setUploadResult(`✓ ${data.document.filename} yüklendi (${data.document.size} bytes)`)
+        refresh()
+      } else {
+        setUploadResult(`✗ ${data.error || 'Yükleme başarısız'}`)
+      }
+    } catch (err: any) {
+      setUploadResult(`✗ ${err.message}`)
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
 
   const filtered = documents.filter((d) =>
     d.filename.toLowerCase().includes(search.toLowerCase())
@@ -70,19 +97,30 @@ export function DocumentsView() {
         </Button>
       </div>
 
-      {/* Upload zone (mock) */}
-      <Card
-        className="border-2 border-dashed border-border/60 p-8 text-center cursor-pointer hover:border-accent hover:bg-accent/5 transition-colors"
-        onClick={() => alert('Belge yükleme özelliği Phase 2\'de gelecek. Bu sürüm demo veritabanını gösterir.')}
-      >
-        <div className="inline-flex w-12 h-12 rounded-lg bg-accent/10 items-center justify-center mb-3">
-          <Upload className="w-5 h-5 text-accent" />
-        </div>
-        <div className="text-sm font-medium">PDF, DOCX veya TXT sürükleyin</div>
-        <div className="text-xs text-muted-foreground mt-1">
-          Maksimum 50MB · Otomatik OCR + chunking + embedding
-        </div>
-      </Card>
+      {/* Upload zone */}
+      <label className="block cursor-pointer">
+        <Card
+          className="border-2 border-dashed border-border/60 p-8 text-center hover:border-accent hover:bg-accent/5 transition-colors"
+        >
+          <div className="inline-flex w-12 h-12 rounded-lg bg-accent/10 items-center justify-center mb-3">
+            {uploading ? (
+              <Loader2 className="w-5 h-5 text-accent animate-spin" />
+            ) : (
+              <Upload className="w-5 h-5 text-accent" />
+            )}
+          </div>
+          <div className="text-sm font-medium">
+            {uploading ? 'Yükleniyor...' : 'PDF, DOCX veya TXT sürükleyin'}
+          </div>
+          <div className="text-xs text-muted-foreground mt-1">
+            Maksimum 10MB · Otomatik metin çıkarımı + NVIDIA embedding
+          </div>
+          <input type="file" className="hidden" onChange={handleUpload} accept=".pdf,.docx,.txt,.json" />
+        </Card>
+      </label>
+      {uploadResult && (
+        <div className="px-3 py-2 rounded-md bg-muted/40 text-xs">{uploadResult}</div>
+      )}
 
       {/* Search */}
       <div className="relative">

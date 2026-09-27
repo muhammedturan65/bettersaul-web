@@ -67,6 +67,7 @@ export function PetitionEditor({ onBack }: PetitionEditorProps) {
   const [stages, setStages] = useState<Stage[]>([])
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
+  const [provider, setProvider] = useState<'auto' | 'nvidia' | 'zai'>('auto')
 
   const ALL_CLAIMS = [
     { id: 'ise_iade', label: 'İşe iade' },
@@ -106,10 +107,11 @@ export function PetitionEditor({ onBack }: PetitionEditorProps) {
     setStages([])
 
     try {
-      const res = await fetch('/api/petitions/generate', {
+      const url = provider === 'nvidia' ? '/api/petitions/generate-nvidia' : '/api/petitions/generate'
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ formData: form }),
+        body: JSON.stringify({ formData: form, provider }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -267,6 +269,26 @@ export function PetitionEditor({ onBack }: PetitionEditorProps) {
             </div>
           </div>
 
+          {/* Provider selection */}
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-muted-foreground">AI Sağlayıcı:</span>
+            {(['auto', 'nvidia', 'zai'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setProvider(p)}
+                className={cn(
+                  'px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors',
+                  provider === p
+                    ? 'bg-accent text-sidebar'
+                    : 'bg-muted text-muted-foreground hover:bg-muted/70'
+                )}
+              >
+                {p === 'auto' ? 'Auto' : p === 'nvidia' ? 'NVIDIA Nemotron 120B' : 'Z.ai'}
+              </button>
+            ))}
+          </div>
+
           <Button
             onClick={handleGenerate}
             disabled={loading || !form.petitioner_name || !form.facts}
@@ -275,7 +297,7 @@ export function PetitionEditor({ onBack }: PetitionEditorProps) {
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Dilekçe üretiliyor
+                Dilekçe üretiliyor ({provider})
               </>
             ) : (
               <>
@@ -367,6 +389,22 @@ export function PetitionEditor({ onBack }: PetitionEditorProps) {
                 <pre className="text-xs leading-relaxed whitespace-pre-wrap font-mono max-h-[400px] overflow-y-auto scrollbar-thin p-4 bg-muted/20">
                   {result.bodyText}
                 </pre>
+                <div className="px-4 py-3 border-t border-border/60 flex items-center justify-between">
+                  <span className="text-[10px] text-muted-foreground">
+                    Sağlayıcı: {result.provider || 'zai'} · Model: {result.model || 'GLM'}
+                  </span>
+                  {result.petitionId && (
+                    <a
+                      href={`/api/petitions/export-pdf?petitionId=${result.petitionId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md brass-bar text-sidebar hover:opacity-90"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      PDF/HTML İndir
+                    </a>
+                  )}
+                </div>
               </Card>
 
               {/* Quality findings */}
