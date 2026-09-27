@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "BetterSaul": {
+      "command": "C:\\Users\\user\\AppData\\Local\\BetterSaul\\runtime\\python\\python.exe",
+      "args": [
+        "C:\\Users\\user\\AppData\\Local\\BetterSaul\\app\\engine\\run_mcp.py",
+        "--stdio"
+      ],
+      "cwd": "C:\\Users\\user\\AppData\\Local\\BetterSaul\\app\\engine",
+      "env": {
+        "PYTHONPATH": "C:\\Users\\user\\AppData\\Local\\BetterSaul\\app\\engine",
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}

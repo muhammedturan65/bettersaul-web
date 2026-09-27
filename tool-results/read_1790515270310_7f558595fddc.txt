@@ -1,0 +1,808 @@
+     1→     1→"""Bağımsız denetim zinciri. Dilekçe metnine sistem notu yazmaz."""
+     2→     2→from __future__ import annotations
+     3→     3→
+     4→     4→import re
+     5→     5→from datetime import datetime
+     6→     6→from typing import Any
+     7→     7→
+     8→     8→from .catalog import (
+     9→     9→    CLAIM_EVIDENCE,
+    10→    10→    CLAIM_SPECS,
+    11→    11→    CITE_FOR_CLAIM,
+    12→    12→    EVIDENCE_ALIASES,
+    13→    13→    FAMILY_CLAIMS,
+    14→    14→    FESHE_BAGLI,
+    15→    15→    ISE_IADE_FAMILY,
+    16→    16→    JOINDER_RULES,
+    17→    17→    LABOR_CLAIMS,
+    18→    18→    MISSING_MATRIX,
+    19→    19→    PROMPT_LEAK,
+    20→    20→    STATUTE_FOR_CLAIM,
+    21→    21→    TRACK_CLAIMS,
+    22→    22→    TRACKS,
+    23→    23→)
+    24→    24→
+    25→    25→KRITIK = "kritik"
+    26→    26→YUKSEK = "yuksek"
+    27→    27→ORTA = "orta"
+    28→    28→DUSUK = "dusuk"
+    29→    29→
+    30→    30→_DATE_RE = re.compile(r"(\d{1,2})[./](\d{1,2})[./](\d{4})")
+    31→    31→_TL_RE = re.compile(r"(?i)(\d{1,3}(?:\.\d{3})+|\d+)(?:\s*,\d{1,2})?\s*(?:TL|₺)")
+    32→    32→_TCKN_RE = re.compile(r"\b([1-9]\d{10})\b")
+    33→    33→_EK_RE = re.compile(r"(?i)E\.\s*(\d{4}/\d+)\s*,?\s*K\.\s*(\d{4}/\d+)")
+    34→    34→_BNO_RE = re.compile(r"(?i)B\.\s*No\s*[:：]?\s*(\d{4}/\d+)")
+    35→    35→
+    36→    36→
+    37→    37→def _fold(s: str) -> str:
+    38→    38→    t = (s or "").replace("İ", "i").replace("I", "i").replace("ı", "i").lower()
+    39→    39→    return (
+    40→    40→        t.replace("ğ", "g").replace("ş", "s").replace("ö", "o")
+    41→    41→        .replace("ü", "u").replace("ç", "c")
+    42→    42→    )
+    43→    43→
+    44→    44→
+    45→    45→def _f(sev: str, code: str, msg: str, hint: str = "", dim: str = "") -> dict:
+    46→    46→    return {"sev": sev, "code": code, "msg": msg, "hint": hint, "dim": dim}
+    47→    47→
+    48→    48→
+    49→    49→def detect_claims(text: str) -> set[str]:
+    50→    50→    t = text or ""
+    51→    51→    return {c for c, pat, _ in CLAIM_SPECS if re.search(pat, t, re.I)}
+    52→    52→
+    53→    53→
+    54→    54→def claim_labels(codes: set[str]) -> list[str]:
+    55→    55→    lab = {c: n for c, _, n in CLAIM_SPECS}
+    56→    56→    order = [c for c, _, _ in CLAIM_SPECS]
+    57→    57→    return [lab[c] for c in order if c in codes]
+    58→    58→
+    59→    59→
+    60→    60→def _fmt(codes: set[str]) -> str:
+    61→    61→    labs = claim_labels(codes)
+    62→    62→    return ", ".join(labs) if labs else "—"
+    63→    63→
+    64→    64→
+    65→    65→def is_kalem_dump(text: str) -> bool:
+    66→    66→    return len(detect_claims(text) & LABOR_CLAIMS) >= 3
+    67→    67→
+    68→    68→
+    69→    69→def intent_text(form: dict) -> str:
+    70→    70→    bits = [
+    71→    71→        str((form or {}).get(k) or "")
+    72→    72→        for k in ("requests", "extraInstructions", "caseSummary", "userPrompt")
+    73→    73→    ]
+    74→    74→    title = str((form or {}).get("title") or "")
+    75→    75→    if title and not is_kalem_dump(title):
+    76→    76→        bits.append(title)
+    77→    77→    return "\n".join(bits)
+    78→    78→
+    79→    79→
+    80→    80→def form_claims(form: dict) -> set[str]:
+    81→    81→    found = detect_claims(intent_text(form or {}))
+    82→    82→    ptype = str((form or {}).get("petitionType") or "")
+    83→    83→    kind = _kind_from_ptype(ptype)
+    84→    84→    if kind == "is" and not (found & LABOR_CLAIMS):
+    85→    85→        found.add("ucret")
+    86→    86→    if kind == "bosanma" and not (found & {"tmk164", "tmk166", "anlasmali"}):
+    87→    87→        src = _fold(intent_text(form or {}))
+    88→    88→        if re.search(r"terke dayali|tmk\s*(?:m\.?\s*)?164", src):
+    89→    89→            found.add("tmk164")
+    90→    90→        elif re.search(r"anlasmali", src):
+    91→    91→            found.add("anlasmali")
+    92→    92→        else:
+    93→    93→            found.add("tmk166")
+    94→    94→    if kind == "idare" and "iptal" not in found and "tam_yargi" not in found:
+    95→    95→        found.add("iptal")
+    96→    96→    return found
+    97→    97→
+    98→    98→
+    99→    99→def cite_fits_claims(text: str, claims: set[str]) -> bool:
+   100→   100→    marked = {c for c, pat in CITE_FOR_CLAIM if re.search(pat, text or "", re.I)}
+   101→   101→    if not marked:
+   102→   102→        return True
+   103→   103→    return bool(marked & (claims or set()))
+   104→   104→
+   105→   105→
+   106→   106→def _kind_from_ptype(ptype: str) -> str:
+   107→   107→    p = _fold(ptype)
+   108→   108→    for code, spec in TRACKS.items():
+   109→   109→        if spec.get("kind") and spec["kind"] != "diger" and spec["kind"] in p:
+   110→   110→            pass
+   111→   111→    if "idar" in p or "vergi" in p:
+   112→   112→        return "idare"
+   113→   113→    if "bosan" in p or "aile" in p:
+   114→   114→        return "bosanma"
+   115→   115→    if re.search(r"\bis\b|isci|işçi", p) or "iş " in (ptype or "").lower():
+   116→   116→        return "is"
+   117→   117→    if "icra" in p:
+   118→   118→        return "icra"
+   119→   119→    if "tuketici" in p:
+   120→   120→        return "tuketici"
+   121→   121→    if "kira" in p or "tahliye" in p:
+   122→   122→        return "kira"
+   123→   123→    if "tazminat" in p:
+   124→   124→        return "tazminat"
+   125→   125→    if "ceza" in p:
+   126→   126→        return "ceza"
+   127→   127→    if "alacak" in p or "ticaret" in p:
+   128→   128→        return "alacak"
+   129→   129→    return "diger"
+   130→   130→
+   131→   131→
+   132→   132→def classify(form: dict) -> dict:
+   133→   133→    """Kesin hüküm değil; ön değerlendirme."""
+   134→   134→    blob = _fold(intent_text(form) + " " + str((form or {}).get("petitionType") or ""))
+   135→   135→    scores: list[tuple[int, str]] = []
+   136→   136→    for code, spec in TRACKS.items():
+   137→   137→        n = len(re.findall(spec["pat"], blob, re.I))
+   138→   138→        if n:
+   139→   139→            scores.append((n, code))
+   140→   140→    scores.sort(reverse=True)
+   141→   141→    top = scores[0][1] if scores else _kind_from_ptype(str((form or {}).get("petitionType") or ""))
+   142→   142→    if top == "diger" and str((form or {}).get("petitionType") or ""):
+   143→   143→        mapped = _kind_from_ptype(str(form.get("petitionType") or ""))
+   144→   144→        top = mapped if mapped != "diger" else top
+   145→   145→    alts = [c for _, c in scores[1:3]]
+   146→   146→    label = TRACKS.get(top, {}).get("label") or top
+   147→   147→    note = f"Ön değerlendirme: Olaylarınız {label} davası niteliğinde olabilir. Kesin nitelendirme değildir."
+   148→   148→    if alts:
+   149→   149→        note += " Ayrım: " + " / ".join(TRACKS[a]["label"] for a in alts if a in TRACKS) + " da değerlendirilebilir."
+   150→   150→    return {"track": top, "alts": alts, "note": note, "claims": sorted(form_claims(form))}
+   151→   151→
+   152→   152→
+   153→   153→def _heading_pat(label: str) -> str:
+   154→   154→    parts: list[str] = []
+   155→   155→    for ch in label:
+   156→   156→        if ch in "İIıi":
+   157→   157→            parts.append("[İIıi]")
+   158→   158→        elif ch in "ŞşSs":
+   159→   159→            parts.append("[ŞşSs]")
+   160→   160→        elif ch in "ÇçCc":
+   161→   161→            parts.append("[ÇçCc]")
+   162→   162→        elif ch in "ĞğGg":
+   163→   163→            parts.append("[ĞğGg]")
+   164→   164→        elif ch in "ÜüUu":
+   165→   165→            parts.append("[ÜüUu]")
+   166→   166→        elif ch in "ÖöOo":
+   167→   167→            parts.append("[ÖöOo]")
+   168→   168→        elif ch in r"\^$.|?*+()[]{}":
+   169→   169→            parts.append("\\" + ch)
+   170→   170→        else:
+   171→   171→            parts.append(ch)
+   172→   172→    return "".join(parts)
+   173→   173→
+   174→   174→
+   175→   175→def section(text: str, start: str, end: str = "") -> str:
+   176→   176→    t = text or ""
+   177→   177→    m = re.search(rf"(?im)^{_heading_pat(start)}\s*:?\s*$", t)
+   178→   178→    if not m:
+   179→   179→        return ""
+   180→   180→    rest = t[m.end() :]
+   181→   181→    if end:
+   182→   182→        n = re.search(rf"(?im)^{_heading_pat(end)}\s*:?\s*$", rest)
+   183→   183→        if n:
+   184→   184→            return rest[: n.start()].strip()
+   185→   185→    return rest.strip()
+   186→   186→
+   187→   187→
+   188→   188→def split_sections(text: str) -> dict[str, str]:
+   189→   189→    t = text or ""
+   190→   190→    return {
+   191→   191→        "konu": section(t, "KONU", "AÇIKLAMALAR") or section(t, "DAVA KONUSU", "AÇIKLAMALAR"),
+   192→   192→        "acik": section(t, "AÇIKLAMALAR", "HUKUKİ SEBEPLER")
+   193→   193→        or section(t, "AÇIKLAMALAR", "DELİLLER")
+   194→   194→        or section(t, "AÇIKLAMALAR", "HUKUKİ DAYANAKLAR"),
+   195→   195→        "delil": section(t, "DELİLLER", "SONUÇ VE İSTEM")
+   196→   196→        or section(t, "DELİLLER", "HUKUKİ DAYANAKLAR")
+   197→   197→        or section(t, "DELİLLER", "HUKUKİ NEDENLER")
+   198→   198→        or section(t, "DELİLLER", "HUKUKİ SEBEPLER"),
+   199→   199→        "huk": section(t, "HUKUKİ SEBEPLER", "DELİLLER")
+   200→   200→        or section(t, "HUKUKİ SEBEPLER", "SONUÇ VE İSTEM")
+   201→   201→        or section(t, "HUKUKİ DAYANAKLAR", "SONUÇ VE İSTEM")
+   202→   202→        or section(t, "HUKUKİ NEDENLER", "SONUÇ VE İSTEM"),
+   203→   203→        "son": section(t, "SONUÇ VE İSTEM", "EKLER"),
+   204→   204→        "ek": section(t, "EKLER"),
+   205→   205→        "head": "\n".join((t or "").splitlines()[:20]),
+   206→   206→    }
+   207→   207→
+   208→   208→
+   209→   209→def _claim_scan(text: str) -> str:
+   210→   210→    t = text or ""
+   211→   211→    t = re.sub(r"(?i)(?:7036[^\n.]{0,140}|arabulucu[^\n.]{0,80})işe iade[^\n.]{0,80}", " ", t)
+   212→   212→    return t
+   213→   213→
+   214→   214→
+   215→   215→def _parse_date(m: re.Match) -> datetime | None:
+   216→   216→    try:
+   217→   217→        return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+   218→   218→    except ValueError:
+   219→   219→        return None
+   220→   220→
+   221→   221→
+   222→   222→def extract_dates(text: str) -> list[dict]:
+   223→   223→    out: list[dict] = []
+   224→   224→    for m in _DATE_RE.finditer(text or ""):
+   225→   225→        dt = _parse_date(m)
+   226→   226→        if not dt:
+   227→   227→            continue
+   228→   228→        start = max(0, m.start() - 40)
+   229→   229→        ctx = _fold((text or "")[start : m.end() + 20])
+   230→   230→        label = "diger"
+   231→   231→        for key, pat in (
+   232→   232→            ("fesih", r"fesih|isten cik|isten ayr"),
+   233→   233→            ("arabulucu", r"arabulucu|son tutanak"),
+   234→   234→            ("ihtar", r"ihtar|temerrut|ihtarnam"),
+   235→   235→            ("sozlesme", r"sozlesme|ise giris|kira baslang"),
+   236→   236→            ("teblig", r"teblig|ogrenme"),
+   237→   237→            ("evlilik", r"evlilik|nikah"),
+   238→   238→            ("islem", r"islem|atama|karar tarihi"),
+   239→   239→        ):
+   240→   240→            if re.search(pat, ctx):
+   241→   241→                label = key
+   242→   242→                break
+   243→   243→        out.append({"label": label, "date": dt, "raw": m.group(0)})
+   244→   244→    return out
+   245→   245→
+   246→   246→
+   247→   247→def missing_questions(form: dict, track: str) -> list[str]:
+   248→   248→    blob = _fold(intent_text(form))
+   249→   249→    qs: list[str] = []
+   250→   250→    for key in (track,):
+   251→   251→        for prio, item in MISSING_MATRIX.get(key, ()):
+   252→   252→            low = _fold(item)
+   253→   253→            if any(w in blob for w in low.split()[:2]):
+   254→   254→                continue
+   255→   255→            qs.append(f"[{prio}] {item}")
+   256→   256→    claims = form_claims(form)
+   257→   257→    if "ise_iade" in claims:
+   258→   258→        for prio, item in MISSING_MATRIX.get("ise_iade", ()):
+   259→   259→            qs.append(f"[{prio}] {item}")
+   260→   260→    seen: set[str] = set()
+   261→   261→    uniq: list[str] = []
+   262→   262→    for q in qs:
+   263→   263→        if q in seen:
+   264→   264→            continue
+   265→   265→        seen.add(q)
+   266→   266→        uniq.append(q)
+   267→   267→    return uniq[:6]
+   268→   268→
+   269→   269→
+   270→   270→def _alignment(form: dict, secs: dict[str, str]) -> list[dict]:
+   271→   271→    out: list[dict] = []
+   272→   272→    k = detect_claims(_claim_scan(secs.get("konu") or "")) & TRACK_CLAIMS
+   273→   273→    a = detect_claims(_claim_scan(secs.get("acik") or "")) & TRACK_CLAIMS
+   274→   274→    h = detect_claims(_claim_scan(secs.get("huk") or "")) & TRACK_CLAIMS
+   275→   275→    s = detect_claims(_claim_scan(secs.get("son") or "")) & TRACK_CLAIMS
+   276→   276→    d = detect_claims(_claim_scan(secs.get("delil") or "")) & TRACK_CLAIMS
+   277→   277→    wanted = form_claims(form) & TRACK_CLAIMS
+   278→   278→    if k and s and k != s:
+   279→   279→        out.append(_f(
+   280→   280→            KRITIK, "konu_sonuc",
+   281→   281→            f"KONU ile SONUÇ çelişiyor: KONU=[{_fmt(k)}] SONUÇ=[{_fmt(s)}].",
+   282→   282→            "HMK m. 119: konu, açıklama ve sonuç aynı talep kümesi olmalı.",
+   283→   283→            "talep",
+   284→   284→        ))
+   285→   285→    ghost = (a - s) & TRACK_CLAIMS
+   286→   286→    if ghost:
+   287→   287→        out.append(_f(
+   288→   288→            KRITIK, "talep_tur",
+   289→   289→            "Açıklamada SONUÇ'ta olmayan talep var: " + _fmt(ghost) + ".",
+   290→   290→            "Açıklamalardaki her ana talep sonuçta ayrı yazılmalı.",
+   291→   291→            "talep",
+   292→   292→        ))
+   293→   293→    extra_son = (s - (a | k | wanted)) & TRACK_CLAIMS
+   294→   294→    if extra_son:
+   295→   295→        out.append(_f(
+   296→   296→            KRITIK, "talep_fazla",
+   297→   297→            "SONUÇ'ta açıklamada desteklenmeyen yeni talep var: " + _fmt(extra_son) + ".",
+   298→   298→            "",
+   299→   299→            "talep",
+   300→   300→        ))
+   301→   301→    if wanted and s and (wanted - s):
+   302→   302→        out.append(_f(
+   303→   303→            YUKSEK, "talep_tur",
+   304→   304→            "Formdaki kalem SONUÇ'ta yok: " + _fmt(wanted - s) + ".",
+   305→   305→            "Seçilen / anlatılan dava türü ile sonuç uyumlu olmalı.",
+   306→   306→            "talep",
+   307→   307→        ))
+   308→   308→    leftover_h = (h - (s | wanted | k)) & (LABOR_CLAIMS | FAMILY_CLAIMS)
+   309→   309→    if leftover_h:
+   310→   310→        out.append(_f(
+   311→   311→            KRITIK, "dayanak_kalem",
+   312→   312→            "Dayanak, istenmeyen kaleme uzanıyor: " + _fmt(leftover_h) + ".",
+   313→   313→            "",
+   314→   314→            "dayanak",
+   315→   315→        ))
+   316→   316→    if a and not d and secs.get("delil"):
+   317→   317→        pass
+   318→   318→    for need, extra, msg in JOINDER_RULES:
+   319→   319→        pool = k | a | s | wanted
+   320→   320→        if (need & pool) and (extra & pool):
+   321→   321→            out.append(_f(YUKSEK, "joinder", msg, "Taleplerin birlikte ileri sürülmesi usulen ayrıca kontrol edilmelidir.", "usul"))
+   322→   322→    son = secs.get("son") or ""
+   323→   323→    if s and not re.search(r"(?i)yargılama gider|yek[aâ]let ücret", son):
+   324→   324→        out.append(_f(ORTA, "sonuc_usul", "SONUÇ'ta yargılama gideri / vekâlet ücreti yok.", "", "usul"))
+   325→   325→    money = bool(_TL_RE.search(son)) or bool(s & LABOR_CLAIMS)
+   326→   326→    if money and not re.search(r"(?i)faiz", son):
+   327→   327→        out.append(_f(ORTA, "faiz", "Para alacağı var; faiz türü / başlangıcı SONUÇ'ta yok.", "Her kaleme aynı faiz otomatik yazılmaz.", "faiz"))
+   328→   328→    if (s & {"ucret", "fazla", "kira_alacak", "para_alacak"}) and not re.search(r"(?i)belirsiz alacak|HMK\s*m\.?\s*107", son + (secs.get("huk") or "")):
+   329→   329→        if re.search(r"(?i)belirsiz|şimdilik|islah", intent_text(form) + son):
+   330→   330→            out.append(_f(ORTA, "belirsiz", "Belirsiz alacak ifadesi zayıf; HMK m. 107 doğrulanmalı.", "", "talep"))
+   331→   331→    return out
+   332→   332→
+   333→   333→
+   334→   334→def _statute_findings(form: dict, secs: dict[str, str]) -> list[dict]:
+   335→   335→    out: list[dict] = []
+   336→   336→    huk = secs.get("huk") or ""
+   337→   337→    active = (detect_claims(secs.get("son") or "") | form_claims(form)) & TRACK_CLAIMS
+   338→   338→    for code, pat in STATUTE_FOR_CLAIM:
+   339→   339→        if code in active:
+   340→   340→            continue
+   341→   341→        if re.search(pat, huk, re.I):
+   342→   342→            out.append(_f(
+   343→   343→                KRITIK if code in LABOR_CLAIMS or code in FAMILY_CLAIMS else YUKSEK,
+   344→   344→                "dayanak_kalem",
+   345→   345→                f"Dayanakta {_fmt({code})} maddesi var; bu kalem talep edilmiyor.",
+   346→   346→                "MEVZUAT DOĞRULAMASI GEREKLİ — ilgisiz madde eklenmez.",
+   347→   347→                "mevzuat",
+   348→   348→            ))
+   349→   349→    return out
+   350→   350→
+   351→   351→
+   352→   352→def _evidence_findings(form: dict, secs: dict[str, str], text: str) -> list[dict]:
+   353→   353→    out: list[dict] = []
+   354→   354→    delil = (secs.get("delil") or "") + "\n" + (secs.get("ek") or "")
+   355→   355→    acik = secs.get("acik") or ""
+   356→   356→    blob = acik + "\n" + (text or "")
+   357→   357→    for code, claim_re, ev_re, title in CLAIM_EVIDENCE:
+   358→   358→        if re.search(claim_re, blob) and not re.search(ev_re, delil):
+   359→   359→            out.append(_f(YUKSEK, "delil", f"{title} iddiası var; bunu destekleyen delil satırı yok.", "Delil yoksa uydurulmaz.", "delil"))
+   360→   360→    if re.search(r"(?i)fazla (çalış|mesai)", blob) and re.search(r"(?i)banka|dekont", delil) and not re.search(r"(?i)puantaj|pdks|tanık", delil):
+   361→   361→        out.append(_f(ORTA, "delil_analiz", "Banka dekontu ücret için anlamlı olabilir; fazla çalışma saatlerini tek başına kanıtlamaz.", "", "delil_vakia"))
+   362→   362→    ek = secs.get("ek") or ""
+   363→   363→    if delil and ek:
+   364→   364→        d_items = [ln.strip() for ln in delil.splitlines() if len(ln.strip()) > 8]
+   365→   365→        if d_items and not any(_fold(x)[:18] in _fold(ek) for x in d_items[:6]):
+   366→   366→            out.append(_f(ORTA, "delil_ek", "DELİL/EK UYUMSUZLUĞU: deliller ile EKLER örtüşmeyebilir.", "", "delil"))
+   367→   367→    seen_alias: set[str] = set()
+   368→   368→    for key, pat in EVIDENCE_ALIASES:
+   369→   369→        hits = re.findall(pat, delil, re.I)
+   370→   370→        if len(hits) >= 2 and key not in seen_alias:
+   371→   371→            seen_alias.add(key)
+   372→   372→            out.append(_f(DUSUK, "delil_tekrar", f"Aynı belge farklı adlarla tekrar: {key}.", "", "delil"))
+   373→   373→    return out
+   374→   374→
+   375→   375→
+   376→   376→def _date_findings(text: str, secs: dict[str, str]) -> list[dict]:
+   377→   377→    out: list[dict] = []
+   378→   378→    dates = extract_dates((text or "") + "\n" + "\n".join(secs.values()))
+   379→   379→    if len(dates) >= 2:
+   380→   380→        ordered = dates
+   381→   381→        for i in range(1, len(ordered)):
+   382→   382→            prev, cur = ordered[i - 1], ordered[i]
+   383→   383→            order = {"sozlesme": 1, "evlilik": 1, "islem": 2, "fesih": 3, "ihtar": 4, "teblig": 4, "arabulucu": 5}
+   384→   384→            if prev["label"] in order and cur["label"] in order:
+   385→   385→                if order[prev["label"]] < order[cur["label"]] and prev["date"] > cur["date"]:
+   386→   386→                    out.append(_f(
+   387→   387→                        KRITIK, "kronoloji",
+   388→   388→                        f"Tarih sırası mantıksız: {prev['label']} {prev['raw']} → {cur['label']} {cur['raw']}.",
+   389→   389→                        "SÜRE KONTROLÜ GEREKLİ. Eksikse süre uydurulmaz.",
+   390→   390→                        "tarih",
+   391→   391→                    ))
+   392→   392→                    break
+   393→   393→    by = {d["label"]: d for d in dates}
+   394→   394→    if "fesih" in by and "arabulucu" in by:
+   395→   395→        delta = (by["arabulucu"]["date"] - by["fesih"]["date"]).days
+   396→   396→        if delta < 0:
+   397→   397→            out.append(_f(KRITIK, "sure", "Arabuluculuk tarihi fesihten önce görünüyor.", "SÜRE KONTROLÜ GEREKLİ.", "sure"))
+   398→   398→    if "fesih" in by and "ise_iade" in detect_claims(text or ""):
+   399→   399→        out.append(_f(ORTA, "sure", "İşe iade için fesih tebliği–arabuluculuk–dava zinciri doğrulanmalı; süre hesabı uydurulmaz.", "", "sure"))
+   400→   400→    return out
+   401→   401→
+   402→   402→
+   403→   403→def _amount_findings(text: str, secs: dict[str, str]) -> list[dict]:
+   404→   404→    out: list[dict] = []
+   405→   405→    blob = (secs.get("acik") or "") + "\n" + (secs.get("son") or "")
+   406→   406→    m_ay = re.search(r"(?i)(\d{1,3}(?:\.\d{3})+|\d+)\s*(?:TL|₺)[^\n]{0,40}?(\d{1,2})\s*ay", blob)
+   407→   407→    if not m_ay:
+   408→   408→        m_ay = re.search(r"(?i)(\d{1,2})\s*ay[^\n]{0,40}?(\d{1,3}(?:\.\d{3})+|\d+)\s*(?:TL|₺)", blob)
+   409→   409→        if m_ay:
+   410→   410→            ay, raw = int(m_ay.group(1)), m_ay.group(2)
+   411→   411→            monthly = None
+   412→   412→        else:
+   413→   413→            ay, raw, monthly = None, None, None
+   414→   414→    else:
+   415→   415→        monthly = int(re.sub(r"[^\d]", "", m_ay.group(1)))
+   416→   416→        ay = int(m_ay.group(2))
+   417→   417→        raw = None
+   418→   418→    if monthly and ay and monthly < 5_000_000:
+   419→   419→        expect = monthly * ay
+   420→   420→        totals = []
+   421→   421→        for m in _TL_RE.finditer(blob):
+   422→   422→            v = int(re.sub(r"[^\d]", "", m.group(1)))
+   423→   423→            if v >= monthly:
+   424→   424→                totals.append(v)
+   425→   425→        if expect not in totals and any(abs(v - expect) > max(100, expect * 0.02) and abs(v - expect) < expect for v in totals):
+   426→   426→            out.append(_f(KRITIK, "hesap", f"Aylık {monthly} TL × {ay} ay = {expect} TL ile metindeki toplam örtüşmeyebilir.", "Hesap uydurulmaz; çelişki raporlanır.", "hesap"))
+   427→   427→    fold = _fold(blob)
+   428→   428→    if "net" in fold and "brut" in fold:
+   429→   429→        out.append(_f(ORTA, "netbrut", "Net / brüt / kesinti kavramları aynı metinde; karışıp karışmadığı kontrol edilmeli.", "", "hesap"))
+   430→   430→    if re.search(r"(?i)kdv|stopaj|sgk\s*kesinti", blob) and re.search(r"(?i)ücret|kira|tazminat", blob):
+   431→   431→        out.append(_f(DUSUK, "netbrut", "Vergi / kesinti ifadesi var; matrah ile talep tutarı karışmamalı.", "", "hesap"))
+   432→   432→    return out
+   433→   433→
+   434→   434→
+   435→   435→def _jurisdiction(form: dict, text: str) -> list[dict]:
+   436→   436→    court = str((form or {}).get("court") or "")
+   437→   437→    if not court:
+   438→   438→        court = (text or "").splitlines()[0] if text else ""
+   439→   439→    track = classify(form)["track"]
+   440→   440→    spec = TRACKS.get(track) or {}
+   441→   441→    hint = spec.get("court_hint") or ""
+   442→   442→    if court and hint and not re.search(hint, _fold(court), re.I):
+   443→   443→        return [_f(
+   444→   444→            YUKSEK, "yetki",
+   445→   445→            f"YETKİ/GÖREV KONTROLÜ GEREKLİ: mahkeme satırı ({court[:80]}) ile ön değerlendirme ({spec.get('label')}) örtüşmeyebilir.",
+   446→   446→            "Kullanıcının yazdığı mahkeme gerekçesiz değiştirilmez.",
+   447→   447→            "yetki",
+   448→   448→        )]
+   449→   449→    return []
+   450→   450→
+   451→   451→
+   452→   452→def _procedure(form: dict, text: str, secs: dict[str, str]) -> list[dict]:
+   453→   453→    out: list[dict] = []
+   454→   454→    blob = _fold(intent_text(form) + "\n" + (text or ""))
+   455→   455→    track = classify(form)["track"]
+   456→   456→    spec = TRACKS.get(track) or {}
+   457→   457→    for need in spec.get("procedure") or ():
+   458→   458→        if need == "arabuluculuk":
+   459→   459→            if "arabuluculuk" not in blob and "arabulucu" not in blob:
+   460→   460→                out.append(_f(YUKSEK, "usul", "Bu türde arabuluculuk dava şartı olabilir; tutanak yok, numara uydurulmaz.", "", "on_sart"))
+   461→   461→            elif re.search(r"arabulucu", blob) and not re.search(r"\d", blob):
+   462→   462→                out.append(_f(ORTA, "usul", "Arabuluculuk anılmış; büro / tutanak no yok — uydurulmaz, [BİLGİ GİRİLMEDİ].", "", "on_sart"))
+   463→   463→        if need == "ihtar" and "tahliye" in detect_claims(text or intent_text(form)) and not re.search(r"ihtar", blob):
+   464→   464→            out.append(_f(YUKSEK, "usul", "Tahliye / temerrüt için ihtar bilgisi yok.", "", "on_sart"))
+   465→   465→        if need == "sure" and track in ("idare", "vergi") and not _DATE_RE.search(intent_text(form)):
+   466→   466→            out.append(_f(YUKSEK, "usul", "İdari / vergi davasında tebliğ-öğrenme tarihi yok; süre hesabı uydurulmaz.", "SÜRE KONTROLÜ GEREKLİ.", "sure"))
+   467→   467→        if need == "hakem" and re.search(r"tuketici|tüketici", blob) and not re.search(r"hakem", blob):
+   468→   468→            out.append(_f(ORTA, "usul", "Tüketici uyuşmazlığında hakem heyeti eşiği kontrol edilmeli.", "", "on_sart"))
+   469→   469→    return out
+   470→   470→
+   471→   471→
+   472→   472→def _contradictions(text: str) -> list[dict]:
+   473→   473→    out: list[dict] = []
+   474→   474→    t = text or ""
+   475→   475→    fold = _fold(t)
+   476→   476→    if re.search(r"sozlu fesih|fesih sozlu", fold) and re.search(r"yazili fesih|fesih bildirimi teblig", fold):
+   477→   477→        out.append(_f(KRITIK, "celiski", "Bir yerde sözlü fesih, başka yerde yazılı fesih tebliği var.", "", "vakia"))
+   478→   478→    if re.search(r"anlasmali bosan", fold) and re.search(r"cekismeli|kusur|aldat|siddet", fold):
+   479→   479→        out.append(_f(YUKSEK, "celiski", "Anlaşmalı boşanma ile çekişmeli / kusur anlatımı yan yana.", "", "vakia"))
+   480→   480→    paras = re.findall(r"(?m)^\s*\d{1,2}\.\s+(.{40,160})", t)
+   481→   481→    norms = [_fold(p)[:80] for p in paras]
+   482→   482→    if len(norms) >= 4 and len(set(norms)) <= max(2, len(norms) // 3):
+   483→   483→        out.append(_f(ORTA, "vakia_tekrar", "Aynı vakıa farklı maddelerde gereksiz tekrarlanmış olabilir.", "Hukuken gerekli tekrar silinmez.", "vakia"))
+   484→   484→    return out
+   485→   485→
+   486→   486→
+   487→   487→def _hallucination(form: dict, text: str) -> list[dict]:
+   488→   488→    out: list[dict] = []
+   489→   489→    src = intent_text(form) + "\n" + str((form or {}).get("parties") or "")
+   490→   490→    src_fold = _fold(src)
+   491→   491→    for m in _TCKN_RE.finditer(text or ""):
+   492→   492→        if m.group(1) not in src:
+   493→   493→            out.append(_f(KRITIK, "uydurma", "Metinde TCKN var; kullanıcı kaynağında yok.", "Uydurma bilgi engeli.", "uydurma"))
+   494→   494→            break
+   495→   495→    for m in re.finditer(r"(?i)tanık\s+([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+)+)", text or ""):
+   496→   496→        if _fold(m.group(1)) not in src_fold:
+   497→   497→            out.append(_f(KRITIK, "uydurma", f"Tanık adı ({m.group(1)}) kullanıcı metninde yok.", "", "uydurma"))
+   498→   498→            break
+   499→   499→    for m in _EK_RE.finditer(text or ""):
+   500→   500→        key = m.group(1)
+   501→   501→        if key not in src and "yargıtay" in _fold(text[max(0, m.start() - 30):m.end()]):
+   502→   502→            pass
+   503→   503→    for pat in PROMPT_LEAK:
+   504→   504→        if re.search(pat, text or "", re.I):
+   505→   505→            out.append(_f(KRITIK, "sizinti", "KRİTİK ÇIKTI HATASI: mahkeme metnine sistem / prompt sızıntısı girmiş.", "", "bicim"))
+   506→   506→            break
+   507→   507→    if re.search(r"(?i)kesinlikle (kötü niyet|kusurlu|haksız)", text or ""):
+   508→   508→        out.append(_f(ORTA, "kesinlik", "Kanıtlanmamış olgu kesin gerçek gibi yazılmış olabilir.", "İleri sürülmektedir, dili tercih edilir.", "hukuki"))
+   509→   509→    return out
+   510→   510→
+   511→   511→
+   512→   512→def _cite_findings(text: str, memory: dict | None, form: dict) -> list[dict]:
+   513→   513→    out: list[dict] = []
+   514→   514→    mem = memory or {}
+   515→   515→    known = " ".join(str(c) for c in (mem.get("cites") or []))
+   516→   516→    for row in mem.get("aym") or []:
+   517→   517→        if isinstance(row, dict):
+   518→   518→            known += " " + str(row.get("kunye") or "")
+   519→   519→    unverified = 0
+   520→   520→    for m in _EK_RE.finditer(text or ""):
+   521→   521→        if m.group(1) not in known:
+   522→   522→            unverified += 1
+   523→   523→    if unverified:
+   524→   524→        out.append(_f(YUKSEK, "ictihat", f"{unverified} künye tarama hafızasında yok — İçtihat doğrulaması gereklidir.", "Karar uydurulmaz; ilgisiz içtihat eklenmez.", "ictihat"))
+   525→   525→    claims = form_claims(form)
+   526→   526→    huk = (
+   527→   527→        section(text or "", "HUKUKİ SEBEPLER", "DELİLLER")
+   528→   528→        or section(text or "", "HUKUKİ SEBEPLER", "SONUÇ VE İSTEM")
+   529→   529→        or section(text or "", "HUKUKİ DAYANAKLAR", "SONUÇ VE İSTEM")
+   530→   530→    )
+   531→   531→    for ln in (huk or "").splitlines():
+   532→   532→        if re.search(r"(?i)Yargıtay|Danıştay|AYM|E\.\s*\d{4}", ln) and not cite_fits_claims(ln, claims):
+   533→   533→            out.append(_f(KRITIK, "ictihat", "Dayanaktaki içtihat istenmeyen kaleme ait.", "", "ictihat"))
+   534→   534→            break
+   535→   535→    return out
+   536→   536→
+   537→   537→
+   538→   538→def _party_roles(form: dict, text: str) -> list[dict]:
+   539→   539→    out: list[dict] = []
+   540→   540→    davaci = str((form or {}).get("parties") or "")
+   541→   541→    m = re.search(r"(?im)^Ad Soyad\s*[:：]\s*(.+)$", text or "")
+   542→   542→    header = m.group(1).strip() if m else ""
+   543→   543→    body_muv = re.search(
+   544→   544→        r"(?i)müvekkil(?:im)?\s+([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+){1,2})",
+   545→   545→        text or "",
+   546→   546→    )
+   547→   547→    if header and body_muv:
+   548→   548→        a = _fold(header.split()[0])
+   549→   549→        b = _fold(body_muv.group(1).split()[0])
+   550→   550→        if a and b and a != b and len(a) > 2:
+   551→   551→            out.append(_f(KRITIK, "taraf", f"Taraf sıfatı / isim tutarsız: başlıkta {header}, gövdede {body_muv.group(1)}.", "BİLGİ TUTARSIZLIĞI.", "hukuki"))
+   552→   552→    return out
+   553→   553→
+   554→   554→
+   555→   555→def _chain_findings(form: dict, secs: dict[str, str]) -> list[dict]:
+   556→   556→    out: list[dict] = []
+   557→   557→    acik = secs.get("acik") or ""
+   558→   558→    wanted = form_claims(form)
+   559→   559→    for code in wanted & {"fazla", "ubgt", "hafta"}:
+   560→   560→        if code not in detect_claims(acik) and code in detect_claims(secs.get("son") or ""):
+   561→   561→            out.append(_f(YUKSEK, "zincir", f"{_fmt({code})} sonuçta var; vakıada somutlaştırılmamış.", "VAKIA SOMUTLAŞTIRMA EKSİKLİĞİ.", "vakia"))
+   562→   562→        elif code in detect_claims(acik):
+   563→   563→            if not re.search(r"\d{4}|\d{1,2}[./]\d{1,2}|saat|dönem", acik, re.I):
+   564→   564→                out.append(_f(YUKSEK, "zincir", f"{_fmt({code})} anlatılmış; dönem / süre / düzen somut değil.", "VAKIA SOMUTLAŞTIRMA EKSİKLİĞİ.", "vakia"))
+   565→   565→    return out
+   566→   566→
+   567→   567→
+   568→   568→def _adversarial(findings: list[dict], secs: dict[str, str]) -> list[str]:
+   569→   569→    notes: list[str] = []
+   570→   570→    codes = {f["code"] for f in findings}
+   571→   571→    if "talep_tur" in codes or "konu_sonuc" in codes:
+   572→   572→        notes.append("Karşı taraf: dava türü ile sonuç fıkrası uyumsuz; talep reddi / ıslah tartışması açılabilir.")
+   573→   573→    if "delil" in codes or "delil_analiz" in codes:
+   574→   574→        notes.append("Karşı taraf: iddia somutlaştırılmamış / delil iddiayı tek başına ispatlamıyor.")
+   575→   575→    if "zincir" in codes:
+   576→   576→        notes.append("Hâkim: vakıa–hukuk–delil–talep zinciri kopuk; açıklama istenebilir.")
+   577→   577→    if "sure" in codes or "usul" in codes:
+   578→   578→        notes.append("Hâkim: dava şartı / süre yönünden dosya usulden incelenebilir.")
+   579→   579→    if "uydurma" in codes:
+   580→   580→        notes.append("Karşı taraf: metindeki sayı / tanık / künye dayanağı sorulabilir.")
+   581→   581→    if not re.search(r"(?i)faiz", secs.get("son") or ""):
+   582→   582→        notes.append("Hâkim: faiz türü ve başlangıcı hüküm için açık değil.")
+   583→   583→    if not notes:
+   584→   584→        notes.append("Belirgin zayıf nokta kural motorunda çıkmadı; bu mahkeme sonucu değildir.")
+   585→   585→    return notes[:8]
+   586→   586→
+   587→   587→
+   588→   588→def _personal(text: str) -> list[dict]:
+   589→   589→    out: list[dict] = []
+   590→   590→    if re.search(r"(?i)kimlik fotokopi|hesap no\s*[:：]\s*\d{8,}|iban\s*[:：]", text or ""):
+   591→   591→        out.append(_f(ORTA, "kvkk", "Gereksiz kişisel veri / hesap ayrıntısı dilekçeye girmiş olabilir.", "", "kvkk"))
+   592→   592→    return out
+   593→   593→
+   594→   594→
+   595→   595→DIMS = (
+   596→   596→    "hukuki", "usul", "vakia", "talep", "delil", "delil_vakia", "dayanak",
+   597→   597→    "mevzuat", "ictihat", "tarih", "hesap", "faiz", "yetki", "on_sart",
+   598→   598→    "kvkk", "bicim", "uydurma",
+   599→   599→)
+   600→   600→
+   601→   601→DIM_LABEL = {
+   602→   602→    "hukuki": "Hukuki Tutarlılık",
+   603→   603→    "usul": "Usul Uygunluğu",
+   604→   604→    "vakia": "Vakıa Tutarlılığı",
+   605→   605→    "talep": "Talep–Sonuç Uyumu",
+   606→   606→    "delil": "Delil Yeterliliği",
+   607→   607→    "delil_vakia": "Delil–Vakıa Uyumu",
+   608→   608→    "dayanak": "Hukuki Dayanak Uyumu",
+   609→   609→    "mevzuat": "Mevzuat Doğruluğu",
+   610→   610→    "ictihat": "İçtihat Güvenilirliği",
+   611→   611→    "tarih": "Tarih/Kronoloji",
+   612→   612→    "hesap": "Tutar/Hesap Doğruluğu",
+   613→   613→    "faiz": "Faiz Kontrolü",
+   614→   614→    "yetki": "Yetki/Görev Kontrolü",
+   615→   615→    "on_sart": "Usuli Ön Şartlar",
+   616→   616→    "kvkk": "Kişisel Veri Kontrolü",
+   617→   617→    "bicim": "Dil ve Biçim",
+   618→   618→    "uydurma": "Uydurma Bilgi Riski",
+   619→   619→}
+   620→   620→
+   621→   621→CODE_DIM = {
+   622→   622→    "konu_sonuc": "talep", "talep_tur": "talep", "talep_fazla": "talep", "talep_capraz": "talep",
+   623→   623→    "belirsiz": "talep", "dayanak_kalem": "dayanak", "madde": "mevzuat", "mevzuat_graf": "mevzuat",
+   624→   624→    "ictihat": "ictihat", "delil": "delil", "delil_analiz": "delil_vakia", "delil_ek": "delil",
+   625→   625→    "delil_tekrar": "delil", "kronoloji": "tarih", "sure": "tarih", "hesap": "hesap",
+   626→   626→    "netbrut": "hesap", "faiz": "faiz", "yetki": "yetki", "usul": "on_sart", "joinder": "usul",
+   627→   627→    "sonuc_usul": "usul", "celiski": "vakia", "vakia_tekrar": "vakia", "zincir": "vakia",
+   628→   628→    "uydurma": "uydurma", "sizinti": "bicim", "bicim": "bicim", "kesinlik": "hukuki",
+   629→   629→    "taraf": "hukuki", "tutar": "hesap", "hagb": "hukuki", "kvkk": "kvkk", "zorunlu": "vakia",
+   630→   630→    "cocuk": "hukuki",
+   631→   631→}
+   632→   632→
+   633→   633→
+   634→   634→def _subscores(findings: list[dict], text: str) -> dict[str, int]:
+   635→   635→    score = {d: 100 for d in DIMS}
+   636→   636→    for f in findings:
+   637→   637→        dim = f.get("dim") or CODE_DIM.get(f.get("code") or "", "hukuki")
+   638→   638→        if dim not in score:
+   639→   639→            dim = "hukuki"
+   640→   640→        if f.get("sev") == KRITIK:
+   641→   641→            score[dim] -= 28
+   642→   642→        elif f.get("sev") == YUKSEK:
+   643→   643→            score[dim] -= 14
+   644→   644→        elif f.get("sev") == ORTA:
+   645→   645→            score[dim] -= 8
+   646→   646→        else:
+   647→   647→            score[dim] -= 3
+   648→   648→    if not re.search(r"(?im)^DAVACI\b", text or ""):
+   649→   649→        score["bicim"] -= 20
+   650→   650→    if not re.search(r"(?im)^SONUÇ VE İSTEM\b", text or ""):
+   651→   651→        score["bicim"] -= 15
+   652→   652→    if re.search(r"(?i)müvekkil", text or ""):
+   653→   653→        pass
+   654→   654→    else:
+   655→   655→        score["bicim"] -= 10
+   656→   656→    return {k: max(0, min(100, v)) for k, v in score.items()}
+   657→   657→
+   658→   658→
+   659→   659→def _overall(sub: dict[str, int], findings: list[dict]) -> int:
+   660→   660→    w = {
+   661→   661→        "hukuki": 8, "dayanak": 6, "mevzuat": 6,  # %20 hukuki doğruluk
+   662→   662→        "usul": 8, "on_sart": 7,  # %15 usul
+   663→   663→        "talep": 15,
+   664→   664→        "vakia": 10,
+   665→   665→        "delil": 6, "delil_vakia": 4,  # %10
+   666→   666→        "ictihat": 4,  # mevzuat grubuna ek
+   667→   667→        "tarih": 5,
+   668→   668→        "hesap": 3, "faiz": 2,
+   669→   669→        "yetki": 5,
+   670→   670→        "bicim": 3, "kvkk": 1, "uydurma": 1,
+   671→   671→    }
+   672→   672→    # rebalance to 100
+   673→   673→    total_w = sum(w.values())
+   674→   674→    raw = sum(sub.get(k, 70) * w[k] for k in w)
+   675→   675→    score = int(round(raw / total_w))
+   676→   676→    if any(f.get("sev") == KRITIK for f in findings):
+   677→   677→        score = min(score, 79)
+   678→   678→    return max(0, min(100, score))
+   679→   679→
+   680→   680→
+   681→   681→def analyze(form: dict, text: str = "", memory: dict | None = None, extra: list[dict] | None = None) -> dict[str, Any]:
+   682→   682→    secs = split_sections(text or "")
+   683→   683→    clf = classify(form)
+   684→   684→    findings: list[dict] = list(extra or [])
+   685→   685→    if (text or "").strip():
+   686→   686→        findings.extend(_alignment(form, secs))
+   687→   687→        findings.extend(_statute_findings(form, secs))
+   688→   688→        findings.extend(_evidence_findings(form, secs, text))
+   689→   689→        findings.extend(_date_findings(text, secs))
+   690→   690→        findings.extend(_amount_findings(text, secs))
+   691→   691→        findings.extend(_jurisdiction(form, text))
+   692→   692→        findings.extend(_procedure(form, text, secs))
+   693→   693→        findings.extend(_contradictions(text))
+   694→   694→        findings.extend(_hallucination(form, text))
+   695→   695→        findings.extend(_cite_findings(text, memory, form))
+   696→   696→        findings.extend(_party_roles(form, text))
+   697→   697→        findings.extend(_chain_findings(form, secs))
+   698→   698→        findings.extend(_personal(text))
+   699→   699→    seen: set[str] = set()
+   700→   700→    uniq: list[dict] = []
+   701→   701→    for f in findings:
+   702→   702→        k = (f.get("code") or "") + "|" + (f.get("msg") or "")[:80]
+   703→   703→        if k in seen:
+   704→   704→            continue
+   705→   705→        seen.add(k)
+   706→   706→        uniq.append(f)
+   707→   707→    sub = _subscores(uniq, text or "")
+   708→   708→    score = _overall(sub, uniq)
+   709→   709→    adv = _adversarial(uniq, secs) if (text or "").strip() else []
+   710→   710→    questions = missing_questions(form, clf["track"])
+   711→   711→    labeled = {DIM_LABEL[k]: v for k, v in sub.items()}
+   712→   712→    crit = [f for f in uniq if f.get("sev") == KRITIK]
+   713→   713→    return {
+   714→   714→        "score": score,
+   715→   715→        "subscores": labeled,
+   716→   716→        "breakdown": {k: f"{v}/100" for k, v in labeled.items()},
+   717→   717→        "findings": uniq,
+   718→   718→        "classifier": clf,
+   719→   719→        "questions": questions,
+   720→   720→        "adversarial": adv,
+   721→   721→        "ok": score >= 80 and not crit,
+   722→   722→        "critical": bool(crit),
+   723→   723→        "claims": {
+   724→   724→            "form": sorted(form_claims(form)),
+   725→   725→            "konu": sorted(detect_claims(secs.get("konu") or "")),
+   726→   726→            "acik": sorted(detect_claims(_claim_scan(secs.get("acik") or ""))),
+   727→   727→            "sonuc": sorted(detect_claims(secs.get("son") or "")),
+   728→   728→        },
+   729→   729→    }
+   730→   730→
+   731→   731→
+   732→   732→def format_quality_report(rev: dict) -> str:
+   733→   733→    score = int(rev.get("score") or 0)
+   734→   734→    lines = [
+   735→   735→        "—— HUKUKİ KALİTE RAPORU (dilekçe metnine yazılmaz) ——",
+   736→   736→        f"GENEL PUAN: {score}/100",
+   737→   737→    ]
+   738→   738→    if rev.get("critical"):
+   739→   739→        lines.append("Kritik hata mevcut — dil mükemmel olsa bile 90+ verilmez.")
+   740→   740→    clf = rev.get("classifier") or {}
+   741→   741→    if clf.get("note"):
+   742→   742→        lines.append(clf["note"])
+   743→   743→    br = rev.get("breakdown") or {}
+   744→   744→    if br:
+   745→   745→        lines.append("Puanlar: " + " · ".join(f"{k} {v}" for k, v in list(br.items())[:8]))
+   746→   746→        rest = list(br.items())[8:]
+   747→   747→        if rest:
+   748→   748→            lines.append("         " + " · ".join(f"{k} {v}" for k, v in rest))
+   749→   749→    by = {KRITIK: [], YUKSEK: [], ORTA: [], DUSUK: []}
+   750→   750→    for f in rev.get("findings") or []:
+   751→   751→        by.setdefault(f.get("sev") or ORTA, []).append(f)
+   752→   752→    titles = (
+   753→   753→        (KRITIK, "KIRMIZI Kritik hatalar"),
+   754→   754→        (YUKSEK, "TURUNCU Önemli eksiklikler"),
+   755→   755→        (ORTA, "SARI Kontrol edilmesi gerekenler"),
+   756→   756→        (DUSUK, "Kontrol"),
+   757→   757→    )
+   758→   758→    for sev, title in titles:
+   759→   759→        items = by.get(sev) or []
+   760→   760→        if not items:
+   761→   761→            continue
+   762→   762→        lines.append(f"{title}:")
+   763→   763→        for f in items[:10]:
+   764→   764→            lines.append(f"- {f['msg']}")
+   765→   765→            if f.get("hint"):
+   766→   766→                lines.append(f"  ({f['hint']})")
+   767→   767→    strong: list[str] = []
+   768→   768→    if not by.get(KRITIK):
+   769→   769→        strong.append("Kritik talep/sonuç çelişkisi bu taramada yok.")
+   770→   770→    if int((rev.get("subscores") or {}).get("Tarih/Kronoloji") or 0) >= 85:
+   771→   771→        strong.append("Tarih / kronoloji tutarlı görünüyor.")
+   772→   772→    if int((rev.get("subscores") or {}).get("Dil ve Biçim") or 0) >= 85:
+   773→   773→        strong.append("Biçim / dil yüzeyi temiz.")
+   774→   774→    if strong:
+   775→   775→        lines.append("YESIL Güçlü yönler:")
+   776→   776→        lines.extend(f"- {s}" for s in strong)
+   777→   777→    if rev.get("adversarial"):
+   778→   778→        lines.append("Karşı taraf / hâkim perspektifi (simülasyon, mahkeme sonucu değildir):")
+   779→   779→        lines.extend(f"- {x}" for x in rev["adversarial"][:6])
+   780→   780→    if rev.get("questions"):
+   781→   781→        lines.append("Kullanıcıya sorulacak (öncelikli, kısa):")
+   782→   782→        lines.extend(f"- {q}" for q in rev["questions"][:6])
+   783→   783→    lines.append(
+   784→   784→        "Öncelik: doğruluk > usul > tutarlılık > delil > dayanak > açıklık > üslup. "
+   785→   785→        "Eksik veri uydurulmaz."
+   786→   786→    )
+   787→   787→    return "\n".join(lines)
+   788→   788→
+   789→   789→
+   790→   790→def format_preflight(form: dict, extra_lines: list[str] | None = None) -> str:
+   791→   791→    clf = classify(form)
+   792→   792→    qs = missing_questions(form, clf["track"])
+   793→   793→    claims = claim_labels(form_claims(form))
+   794→   794→    lines = [
+   795→   795→        "Yazmadan önce — hukuki ön değerlendirme (kesin hüküm değildir).",
+   796→   796→        clf["note"],
+   797→   797→        "Talep envanteri (formdan): " + (", ".join(claims) if claims else "[BİLGİ GİRİLMEDİ]"),
+   798→   798→    ]
+   799→   799→    if extra_lines:
+   800→   800→        lines.extend(extra_lines)
+   801→   801→    if qs:
+   802→   802→        lines.append("Eksik bilgi (cevap gelmese de üretim devam eder; uydurma yok):")
+   803→   803→        lines.extend(f"- {q}" for q in qs)
+   804→   804→    else:
+   805→   805→        lines.append("Öncelikli soru matrisi boş; vakıa kartı ile üretim başlıyor.")
+   806→   806→    lines.append("Mahkeme adı formda varsa gerekçesiz değiştirilmez.")
+   807→   807→    return "\n".join(lines)
+   808→   808→

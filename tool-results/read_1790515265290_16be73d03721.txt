@@ -1,0 +1,1050 @@
+     1→     1→"""Dilekçe veri modeli + tutarlılık / hukuki uyum / uydurma katmanı.
+     2→     2→
+     3→     3→Mevcut şablonu değiştirmez. Formda olmayanı uydurmaz; 'kesinlikle yanlış'
+     4→     4→demez, doğrulanmasını ister. Flutter/PHP/MySQL gerektirmez.
+     5→     5→"""
+     6→     6→from __future__ import annotations
+     7→     7→
+     8→     8→import json
+     9→     9→import re
+    10→    10→from typing import Any
+    11→    11→
+    12→    12→from .templates import resolve_kind
+    13→    13→from .motor.catalog import (
+    14→    14→    CLAIM_SPECS,
+    15→    15→    CITE_FOR_CLAIM as _CITE_FOR_CLAIM,
+    16→    16→    FESHE_BAGLI,
+    17→    17→    ISE_IADE_FAMILY,
+    18→    18→    LABOR_CLAIMS,
+    19→    19→    STATUTE_FOR_CLAIM as _STATUTE_FOR_CLAIM,
+    20→    20→    TRACK_CLAIMS,
+    21→    21→)
+    22→    22→from .motor.pipeline import (
+    23→    23→    analyze as _motor_analyze,
+    24→    24→    claim_labels,
+    25→    25→    cite_fits_claims,
+    26→    26→    detect_claims,
+    27→    27→    form_claims,
+    28→    28→    format_preflight as _motor_preflight,
+    29→    29→    format_quality_report as _motor_report,
+    30→    30→    intent_text,
+    31→    31→    is_kalem_dump,
+    32→    32→)
+    33→    33→
+    34→    34→KRITIK = "kritik"
+    35→    35→YUKSEK = "yuksek"
+    36→    36→ORTA = "orta"
+    37→    37→DUSUK = "dusuk"
+    38→    38→
+    39→    39→_SEV_MARK = {KRITIK: "KIRMIZI", YUKSEK: "TURUNCU", ORTA: "SARI", DUSUK: "YESIL"}
+    40→    40→
+    41→    41→_NAME_RE = re.compile(
+    42→    42→    r"\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][a-zçğıöşü]+){1,2})\b"
+    43→    43→)
+    44→    44→_NAME_UP_RE = re.compile(
+    45→    45→    r"\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+\s+[A-ZÇĞİÖŞÜ]{2,})\b"
+    46→    46→)
+    47→    47→_TL_RE = re.compile(
+    48→    48→    r"(?i)(\d{1,3}(?:\.\d{3})+|\d+)(?:\s*,\d{1,2})?\s*(?:TL|₺)"
+    49→    49→)
+    50→    50→_CITE_EK_RE = re.compile(
+    51→    51→    r"(?i)(?:Yargıtay|Danıştay|AYM|Anayasa Mahkemesi)?[^\n]{0,40}"
+    52→    52→    r"E\.\s*(\d{4}/\d+)\s*,?\s*K\.\s*(\d{4}/\d+)"
+    53→    53→)
+    54→    54→_CITE_BNO_RE = re.compile(r"(?i)B\.\s*No\s*[:：]?\s*(\d{4}/\d+)")
+    55→    55→_TCKN_RE = re.compile(r"\b([1-9]\d{10})\b")
+    56→    56→_ISO_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+    57→    57→
+    58→    58→_STOP = {
+    59→    59→    "türkiye", "ankara", "istanbul", "uşak", "usak", "erzurum",
+    60→    60→    "mahkeme", "bakanlık", "bakanligi", "müdürlük", "mudurlugu",
+    61→    61→    "anayasa", "yargıtay", "yargitay", "danıştay", "danistay",
+    62→    62→    "müvekkil", "muvekkil", "davacı", "davaci", "davalı", "davali",
+    63→    63→    "avukat", "vekili", "kanun", "madde", "karar", "dilekçe", "dilekce",
+    64→    64→}
+    65→    65→
+    66→    66→REQUIRED: dict[str, tuple[tuple[str, str], ...]] = {
+    67→    67→    "bosanma": (
+    68→    68→        ("mahkeme", "Mahkeme"),
+    69→    69→        ("davaci", "Davacı"),
+    70→    70→        ("davali", "Davalı"),
+    71→    71→        ("vekil", "Vekil"),
+    72→    72→        ("evlilik", "Evlilik bilgisi"),
+    73→    73→        ("bosanma_sebebi", "Boşanma sebebi"),
+    74→    74→        ("olaylar", "Olaylar"),
+    75→    75→        ("deliller", "Deliller"),
+    76→    76→        ("hukuki", "Hukuki sebepler"),
+    77→    77→        ("sonuc", "Sonuç ve istem"),
+    78→    78→    ),
+    79→    79→    "is": (
+    80→    80→        ("mahkeme", "İş mahkemesi"),
+    81→    81→        ("davaci", "İşçi"),
+    82→    82→        ("davali", "İşveren"),
+    83→    83→        ("ise_giris", "İşe giriş"),
+    84→    84→        ("isten_cikis", "İşten ayrılış"),
+    85→    85→        ("ucret", "Ücret"),
+    86→    86→        ("alacak", "Alacak kalemleri"),
+    87→    87→        ("arabuluculuk", "Arabuluculuk"),
+    88→    88→        ("deliller", "Deliller"),
+    89→    89→        ("sonuc", "Sonuç ve istem"),
+    90→    90→    ),
+    91→    91→    "tuketici": (
+    92→    92→        ("davaci", "Tüketici"),
+    93→    93→        ("davali", "Satıcı / sağlayıcı"),
+    94→    94→        ("urun", "Ürün / hizmet"),
+    95→    95→        ("sozlesme", "Sözleşme"),
+    96→    96→        ("bedel", "Bedel"),
+    97→    97→        ("ayip", "Ayıp / uyuşmazlık"),
+    98→    98→        ("sonuc", "Talep"),
+    99→    99→    ),
+   100→   100→    "idare": (
+   101→   101→        ("mahkeme", "Mahkeme"),
+   102→   102→        ("davaci", "Davacı"),
+   103→   103→        ("davali", "Davalı idare"),
+   104→   104→        ("islem", "Dava konusu işlem"),
+   105→   105→        ("olaylar", "Olaylar"),
+   106→   106→        ("deliller", "Deliller"),
+   107→   107→        ("hukuki", "Hukuki dayanak"),
+   108→   108→        ("sonuc", "Sonuç ve istem"),
+   109→   109→    ),
+   110→   110→    "icra": (
+   111→   111→        ("davaci", "Alacaklı / şikâyetçi"),
+   112→   112→        ("davali", "Borçlu / karşı taraf"),
+   113→   113→        ("takip", "Takip konusu"),
+   114→   114→        ("sonuc", "Talep"),
+   115→   115→    ),
+   116→   116→    "kira": (
+   117→   117→        ("davaci", "Kiraya veren / kiracı"),
+   118→   118→        ("davali", "Karşı taraf"),
+   119→   119→        ("sozlesme", "Kira sözleşmesi"),
+   120→   120→        ("sonuc", "Talep"),
+   121→   121→    ),
+   122→   122→    "tazminat": (
+   123→   123→        ("davaci", "Davacı"),
+   124→   124→        ("davali", "Davalı"),
+   125→   125→        ("olaylar", "Olay ve kusur"),
+   126→   126→        ("sonuc", "Tazminat talebi"),
+   127→   127→    ),
+   128→   128→    "ceza": (
+   129→   129→        ("davaci", "Müşteki / sanık"),
+   130→   130→        ("olaylar", "Olay anlatımı"),
+   131→   131→        ("sonuc", "Talep"),
+   132→   132→    ),
+   133→   133→    "alacak": (
+   134→   134→        ("davaci", "Alacaklı"),
+   135→   135→        ("davali", "Borçlu"),
+   136→   136→        ("olaylar", "Borç ilişkisi"),
+   137→   137→        ("sonuc", "Talep"),
+   138→   138→    ),
+   139→   139→    "diger": (
+   140→   140→        ("davaci", "Davacı"),
+   141→   141→        ("davali", "Davalı"),
+   142→   142→        ("olaylar", "Vakıa"),
+   143→   143→        ("sonuc", "Talep"),
+   144→   144→    ),
+   145→   145→}
+   146→   146→
+   147→   147→_CLAIM_EVIDENCE = (
+   148→   148→    (r"(?i)fiziksel şiddet|darp|yaralama|sağlık rapor", r"(?i)sağlık rapor|adli rapor|hastane|epikriz", "Fiziksel şiddet"),
+   149→   149→    (r"(?i)kumar", r"(?i)banka|hesap hareket|dekont", "Kumar harcaması"),
+   150→   150→    (r"(?i)hakaret|tehdit", r"(?i)mesaj|whatsapp|tanık|ses kayd", "Hakaret / tehdit"),
+   151→   151→    (r"(?i)ziynet|altın|bilezik|küpe", r"(?i)fotoğraf|fatura|kuyumcu|tanık", "Ziynet"),
+   152→   152→    (r"(?i)ücret|kıdem|ihbar|fazla mesai", r"(?i)bordro|sgk|banka|özlük|arabuluculuk", "İşçilik alacağı"),
+   153→   153→    (r"(?i)ayıp|ayıplı", r"(?i)fatura|garanti|servis|tespit", "Ayıp"),
+   154→   154→)
+   155→   155→
+   156→   156→_LAW_GRAPH = {
+   157→   157→    "bosanma": ("TMK", "4721"),
+   158→   158→    "velayet": ("TMK", "4721"),
+   159→   159→    "nafaka": ("TMK", "4721"),
+   160→   160→    "ziynet": ("TMK", "4721"),
+   161→   161→    "tazminat_aile": ("TMK", "4721"),
+   162→   162→    "adli": ("HMK", "6100"),
+   163→   163→    "is": ("İş Kanunu", "4857"),
+   164→   164→    "arabuluculuk": ("7036", "7036"),
+   165→   165→    "idare": ("İYUK", "2577"),
+   166→   166→    "gs": ("7315", "7315"),
+   167→   167→    "tuketici": ("TKHK", "6502"),
+   168→   168→}
+   169→   169→
+   170→   170→def _fold(s: str) -> str:
+   171→   171→    t = (s or "").replace("İ", "i").replace("I", "i").replace("ı", "i").lower()
+   172→   172→    return (
+   173→   173→        t.replace("ğ", "g").replace("ş", "s").replace("ö", "o")
+   174→   174→        .replace("ü", "u").replace("ç", "c")
+   175→   175→    )
+   176→   176→
+   177→   177→
+   178→   178→def _norm_name(s: str) -> str:
+   179→   179→    return re.sub(r"\s+", " ", (s or "").strip()).casefold()
+   180→   180→
+   181→   181→
+   182→   182→def _blob(form: dict) -> str:
+   183→   183→    bits = [
+   184→   184→        str(form.get(k) or "")
+   185→   185→        for k in (
+   186→   186→            "petitionType", "title", "court", "parties", "caseSummary",
+   187→   187→            "requests", "extraInstructions", "userPrompt", "lawyerName",
+   188→   188→        )
+   189→   189→    ]
+   190→   190→    cv = form.get("claimValues")
+   191→   191→    if cv:
+   192→   192→        bits.append(cv if isinstance(cv, str) else json.dumps(cv, ensure_ascii=False))
+   193→   193→    return "\n".join(bits)
+   194→   194→
+   195→   195→
+   196→   196→def _heading_pat(label: str) -> str:
+   197→   197→    parts: list[str] = []
+   198→   198→    for ch in label:
+   199→   199→        if ch in "İIıi":
+   200→   200→            parts.append("[İIıi]")
+   201→   201→        elif ch in "Şş":
+   202→   202→            parts.append("[ŞşSs]")
+   203→   203→        elif ch in "Çç":
+   204→   204→            parts.append("[ÇçCc]")
+   205→   205→        elif ch in "Ğğ":
+   206→   206→            parts.append("[ĞğGg]")
+   207→   207→        elif ch in "Üü":
+   208→   208→            parts.append("[ÜüUu]")
+   209→   209→        elif ch in "Öö":
+   210→   210→            parts.append("[ÖöOo]")
+   211→   211→        elif ch in r"\^$.|?*+()[]{}":
+   212→   212→            parts.append("\\" + ch)
+   213→   213→        else:
+   214→   214→            parts.append(ch)
+   215→   215→    return "".join(parts)
+   216→   216→
+   217→   217→
+   218→   218→def _section(text: str, start: str, end: str = "") -> str:
+   219→   219→    t = text or ""
+   220→   220→    m = re.search(rf"(?im)^{_heading_pat(start)}\s*:?\s*$", t)
+   221→   221→    if not m:
+   222→   222→        return ""
+   223→   223→    rest = t[m.end() :]
+   224→   224→    if end:
+   225→   225→        n = re.search(rf"(?im)^{_heading_pat(end)}\s*:?\s*$", rest)
+   226→   226→        if n:
+   227→   227→            return rest[: n.start()].strip()
+   228→   228→    return rest.strip()
+   229→   229→
+   230→   230→
+   231→   231→def _tl(raw: str) -> int | None:
+   232→   232→    d = re.sub(r"[^\d]", "", raw or "")
+   233→   233→    if not d:
+   234→   234→        return None
+   235→   235→    try:
+   236→   236→        return int(d)
+   237→   237→    except ValueError:
+   238→   238→        return None
+   239→   239→
+   240→   240→
+   241→   241→_AMOUNT_LABELS = (
+   242→   242→    ("istirak", r"iştirak|istirak"),
+   243→   243→    ("yoksulluk", r"yoksulluk"),
+   244→   244→    ("ziynet", r"ziynet|alt[ıi]n|tak[ıi]"),
+   245→   245→    ("manevi", r"manevi"),
+   246→   246→    ("tazminat", r"maddi|tazminat"),
+   247→   247→    ("ucret", r"ücret|ucret|k[ıi]dem|ihbar"),
+   248→   248→    ("nafaka", r"nafaka"),
+   249→   249→)
+   250→   250→
+   251→   251→
+   252→   252→def _nearest_amount_label(text: str, start: int, end: int) -> str:
+   253→   253→    line_start = (text or "").rfind("\n", 0, start) + 1
+   254→   254→    line_end = (text or "").find("\n", start)
+   255→   255→    if line_end < 0:
+   256→   256→        line_end = len(text or "")
+   257→   257→    line = (text or "")[line_start:line_end]
+   258→   258→    loc_s = start - line_start
+   259→   259→    loc_e = max(loc_s, end - line_start)
+   260→   260→    after = line[loc_e:]
+   261→   261→    nxt = _TL_RE.search(after)
+   262→   262→    chunk = after[: nxt.start()] if nxt else after
+   263→   263→    for lab, pat in _AMOUNT_LABELS:
+   264→   264→        if re.search(pat, chunk, re.I):
+   265→   265→            return lab
+   266→   266→    before = line[:loc_s]
+   267→   267→    for lab, pat in reversed(list(_AMOUNT_LABELS)):
+   268→   268→        if re.search(pat, before, re.I):
+   269→   269→            return lab
+   270→   270→    return "diger"
+   271→   271→
+   272→   272→
+   273→   273→def _amount_hits(text: str, section: str) -> list[dict]:
+   274→   274→    out: list[dict] = []
+   275→   275→    for m in _TL_RE.finditer(text or ""):
+   276→   276→        val = _tl(m.group(1))
+   277→   277→        if val is None or val < 50:
+   278→   278→            continue
+   279→   279→        out.append(
+   280→   280→            {
+   281→   281→                "label": _nearest_amount_label(text, m.start(), m.end()),
+   282→   282→                "value": val,
+   283→   283→                "section": section,
+   284→   284→                "raw": m.group(0),
+   285→   285→            }
+   286→   286→        )
+   287→   287→    return out
+   288→   288→
+   289→   289→
+   290→   290→def _people(text: str) -> list[str]:
+   291→   291→    found: list[str] = []
+   292→   292→    extra = re.compile(
+   293→   293→        r"(?i)m[uü]vekkil(?:im)?\s+([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+){1,2})"
+   294→   294→    )
+   295→   295→    for rx in (extra, _NAME_UP_RE, _NAME_RE):
+   296→   296→        for m in rx.finditer(text or ""):
+   297→   297→            name = re.sub(r"\s+", " ", m.group(1)).strip()
+   298→   298→            low = _fold(name)
+   299→   299→            if any(w in _STOP for w in low.split()):
+   300→   300→                continue
+   301→   301→            if len(name.split()) < 2:
+   302→   302→                continue
+   303→   303→            if name not in found:
+   304→   304→                found.append(name)
+   305→   305→    return found
+   306→   306→
+   307→   307→
+   308→   308→def _line_val(text: str, *labels: str) -> str:
+   309→   309→    for lab in labels:
+   310→   310→        m = re.search(rf"(?im)^{re.escape(lab)}\s*[:：]\s*(.+)$", text or "")
+   311→   311→        if m and m.group(1).strip():
+   312→   312→            return m.group(1).strip()
+   313→   313→    return ""
+   314→   314→
+   315→   315→
+   316→   316→def _header_name(text: str, label: str) -> str:
+   317→   317→    block = _section(text, label, "DAVALI" if label == "DAVACI" else "DAVACI VEKİLİ")
+   318→   318→    if label == "DAVACI":
+   319→   319→        block = _section(text, "DAVACI", "DAVALI") or block
+   320→   320→    return _line_val(block, "Ad Soyad", "Unvan") or _line_val(text, label)
+   321→   321→
+   322→   322→
+   323→   323→def extract_model(form: dict, text: str = "") -> dict[str, Any]:
+   324→   324→    """Yapılandırılmış dilekçe kartı. Eksik alanı uydurmaz."""
+   325→   325→    kind = resolve_kind(str(form.get("petitionType") or ""))
+   326→   326→    src = _blob(form)
+   327→   327→    t = text or ""
+   328→   328→    davaci = _line_val(src, "DAVACI", "Davacı") or _header_name(t, "DAVACI")
+   329→   329→    davali = _line_val(src, "DAVALI", "Davalı") or _header_name(t, "DAVALI")
+   330→   330→    vekil = str(form.get("lawyerName") or "") or _line_val(src, "VEKİL", "Vekil")
+   331→   331→    fold = _fold(src)
+   332→   332→    ground = ""
+   333→   333→    if re.search(r"tmk\s*(?:m\.?\s*)?164|terke dayali|terk davasi", fold):
+   334→   334→        ground = "164"
+   335→   335→    elif re.search(r"tmk\s*(?:m\.?\s*)?166|temelinden sars|siddetli gecimsiz", fold):
+   336→   336→        ground = "166"
+   337→   337→    evlilik = ""
+   338→   338→    em = re.search(
+   339→   339→        r"(?i)(?:evl[ie]n|nik[aâ]h|evlilik).{0,24}(\d{1,2}[./]\d{1,2}[./]\d{4})",
+   340→   340→        src + "\n" + t,
+   341→   341→    )
+   342→   342→    if em:
+   343→   343→        evlilik = em.group(1)
+   344→   344→    children = []
+   345→   345→    for m in re.finditer(
+   346→   346→        r"(?i)(?:müşterek çocuk|çocuk(?:ları)?|velayet)\s*[:：]?\s*([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+){1,2})",
+   347→   347→        src + "\n" + t,
+   348→   348→    ):
+   349→   349→        children.append(re.sub(r"\s+", " ", m.group(1)).strip())
+   350→   350→    acik = (
+   351→   351→        _section(t, "AÇIKLAMALAR", "HUKUKİ SEBEPLER")
+   352→   352→        or _section(t, "AÇIKLAMALAR", "DELİLLER")
+   353→   353→        or _section(t, "AÇIKLAMALAR", "HUKUKİ DAYANAKLAR")
+   354→   354→    )
+   355→   355→    son = _section(t, "SONUÇ VE İSTEM", "EKLER")
+   356→   356→    delil = (
+   357→   357→        _section(t, "DELİLLER", "SONUÇ VE İSTEM")
+   358→   358→        or _section(t, "DELİLLER", "HUKUKİ DAYANAKLAR")
+   359→   359→        or _section(t, "DELİLLER", "HUKUKİ NEDENLER")
+   360→   360→        or _section(t, "DELİLLER", "HUKUKİ SEBEPLER")
+   361→   361→    )
+   362→   362→    huk = (
+   363→   363→        _section(t, "HUKUKİ SEBEPLER", "DELİLLER")
+   364→   364→        or _section(t, "HUKUKİ SEBEPLER", "SONUÇ VE İSTEM")
+   365→   365→        or _section(t, "HUKUKİ DAYANAKLAR", "SONUÇ VE İSTEM")
+   366→   366→        or _section(t, "HUKUKİ NEDENLER", "SONUÇ VE İSTEM")
+   367→   367→    )
+   368→   368→    amounts = (
+   369→   369→        _amount_hits(src, "form")
+   370→   370→        + _amount_hits(acik, "aciklama")
+   371→   371→        + _amount_hits(son, "sonuc")
+   372→   372→        + _amount_hits(_section(t, "KONU", "AÇIKLAMALAR"), "konu")
+   373→   373→    )
+   374→   374→    return {
+   375→   375→        "kind": kind,
+   376→   376→        "dava_turu": str(form.get("petitionType") or ""),
+   377→   377→        "mahkeme": str(form.get("court") or ""),
+   378→   378→        "davaci": davaci,
+   379→   379→        "davali": davali,
+   380→   380→        "vekil": vekil,
+   381→   381→        "cocuklar": children,
+   382→   382→        "evlilik": evlilik,
+   383→   383→        "bosanma_sebebi": ground,
+   384→   384→        "olaylar": (str(form.get("caseSummary") or "") or acik)[:800],
+   385→   385→        "talepler": str(form.get("requests") or ""),
+   386→   386→        "deliller": delil,
+   387→   387→        "hukuki": huk,
+   388→   388→        "sonuc": son or str(form.get("requests") or ""),
+   389→   389→        "ekler": _section(t, "EKLER"),
+   390→   390→        "amounts": amounts,
+   391→   391→        "people_header": {
+   392→   392→            "davaci": [davaci] if davaci else [],
+   393→   393→            "davali": [davali] if davali else [],
+   394→   394→        },
+   395→   395→        "people_body": _people(acik),
+   396→   396→        "people_sonuc": _people(son),
+   397→   397→        "cites_text": [m.group(0).strip() for m in _CITE_EK_RE.finditer(t)]
+   398→   398→        + [m.group(0).strip() for m in _CITE_BNO_RE.finditer(t)],
+   399→   399→        "source": src,
+   400→   400→        "has_text": bool(t.strip()),
+   401→   401→    }
+   402→   402→
+   403→   403→
+   404→   404→def _finding(sev: str, code: str, msg: str, hint: str = "") -> dict:
+   405→   405→    return {"sev": sev, "code": code, "msg": msg, "hint": hint}
+   406→   406→
+   407→   407→
+   408→   408→def _has_field(model: dict, key: str) -> bool:
+   409→   409→    t = (model.get("source") or "") + "\n" + (model.get("olaylar") or "") + "\n" + (model.get("sonuc") or "")
+   410→   410→    fold = _fold(t + "\n" + str(model.get("mahkeme") or ""))
+   411→   411→    checks = {
+   412→   412→        "mahkeme": bool(model.get("mahkeme")) or "mahkeme" in fold,
+   413→   413→        "davaci": bool(model.get("davaci")),
+   414→   414→        "davali": bool(model.get("davali")),
+   415→   415→        "vekil": bool(model.get("vekil")) or "av." in fold,
+   416→   416→        "evlilik": bool(model.get("evlilik")) or "evlilik" in fold or "nikah" in fold,
+   417→   417→        "bosanma_sebebi": bool(model.get("bosanma_sebebi")),
+   418→   418→        "olaylar": len(str(model.get("olaylar") or "")) > 40,
+   419→   419→        "deliller": bool(model.get("deliller")) or "delil" in fold,
+   420→   420→        "hukuki": bool(model.get("hukuki")) or "tmk" in fold or "iyuk" in fold or "hmk" in fold,
+   421→   421→        "sonuc": bool(str(model.get("sonuc") or "").strip()) or bool(model.get("talepler")),
+   422→   422→        "ise_giris": bool(re.search(r"ise giris|ise basl|işe giriş|işe başl", fold)),
+   423→   423→        "isten_cikis": bool(re.search(r"isten cik|fesih|işten ayr|isten ayr", fold)),
+   424→   424→        "ucret": bool(re.search(r"ucret|ücret|asgari|net ", fold)) or any(
+   425→   425→            a["label"] == "ucret" for a in model.get("amounts") or []
+   426→   426→        ),
+   427→   427→        "alacak": bool(re.search(r"kidem|ihbar|fazla mesai|yillik izin|alacak", fold)),
+   428→   428→        "arabuluculuk": "arabuluculuk" in fold,
+   429→   429→        "urun": bool(re.search(r"urun|ürün|hizmet|mal ", fold)),
+   430→   430→        "sozlesme": "sozlesme" in fold or "sözleşme" in fold,
+   431→   431→        "bedel": bool(model.get("amounts")) or "bedel" in fold,
+   432→   432→        "ayip": bool(re.search(r"ayip|ayıp|aykiri", fold)),
+   433→   433→        "islem": bool(re.search(r"idari islem|atama|islem|iptal", fold)),
+   434→   434→        "takip": bool(re.search(r"icra|takip|haciz", fold)),
+   435→   435→    }
+   436→   436→    return bool(checks.get(key))
+   437→   437→
+   438→   438→
+   439→   439→def _party_findings(model: dict, text: str) -> list[dict]:
+   440→   440→    out: list[dict] = []
+   441→   441→    davaci = _norm_name(model.get("davaci") or "")
+   442→   442→    acik_people = [_norm_name(x) for x in model.get("people_body") or []]
+   443→   443→    if davaci and model.get("has_text") and acik_people:
+   444→   444→        first = davaci.split()[0] if davaci.split() else ""
+   445→   445→        if first and len(first) > 2 and not any(first in p for p in acik_people):
+   446→   446→            foreign = [x for x in (model.get("people_body") or []) if _norm_name(x) != davaci]
+   447→   447→            if foreign:
+   448→   448→                out.append(
+   449→   449→                    _finding(
+   450→   450→                        KRITIK,
+   451→   451→                        "taraf",
+   452→   452→                        f"DAVACI bilgisi tutarsız: başlıkta {model.get('davaci')}, "
+   453→   453→                        f"açıklamalarda {foreign[0]} geçiyor.",
+   454→   454→                        "Başlık ve gövde aynı müvekkili kullanmalı.",
+   455→   455→                    )
+   456→   456→                )
+   457→   457→    davali = _norm_name(model.get("davali") or "")
+   458→   458→    if davali and model.get("has_text"):
+   459→   459→        body = _fold(text or "")
+   460→   460→        last = davali.split()[-1] if davali.split() else ""
+   461→   461→        if last and len(last) > 3 and last not in body and "emniyet" not in davali:
+   462→   462→            others = [x for x in (model.get("people_body") or []) if _norm_name(x) != davaci]
+   463→   463→            if others:
+   464→   464→                out.append(
+   465→   465→                    _finding(
+   466→   466→                        YUKSEK,
+   467→   467→                        "taraf",
+   468→   468→                        f"DAVALI adı gövdeyle örtüşmeyebilir: başlıkta {model.get('davali')}.",
+   469→   469→                        "Husumet ve gövde aynı davalıyı göstermelidir.",
+   470→   470→                    )
+   471→   471→                )
+   472→   472→    kids = model.get("cocuklar") or []
+   473→   473→    if len({_norm_name(k) for k in kids}) > 1 and len(kids) >= 2:
+   474→   474→        uniq = []
+   475→   475→        for k in kids:
+   476→   476→            if _norm_name(k) not in {_norm_name(u) for u in uniq}:
+   477→   477→                uniq.append(k)
+   478→   478→        if len(uniq) > 1:
+   479→   479→            out.append(
+   480→   480→                _finding(
+   481→   481→                    KRITIK,
+   482→   482→                    "cocuk",
+   483→   483→                    "Müşterek çocuk adı farklı bölümlerde farklı: " + " / ".join(uniq[:3]) + ".",
+   484→   484→                    "Tek çocuk için tek isim kullanın; kullanıcı vermediyse uydurmayın.",
+   485→   485→                )
+   486→   486→            )
+   487→   487→    return out
+   488→   488→
+   489→   489→
+   490→   490→def _amount_findings(model: dict) -> list[dict]:
+   491→   491→    out: list[dict] = []
+   492→   492→    by: dict[str, set[int]] = {}
+   493→   493→    for a in model.get("amounts") or []:
+   494→   494→        by.setdefault(a["label"], set()).add(int(a["value"]))
+   495→   495→    labels = {
+   496→   496→        "istirak": "iştirak nafakası",
+   497→   497→        "yoksulluk": "yoksulluk nafakası",
+   498→   498→        "nafaka": "nafaka",
+   499→   499→        "ziynet": "ziynet bedeli",
+   500→   500→        "tazminat": "tazminat",
+   501→   501→        "manevi": "manevi tazminat",
+   502→   502→        "ucret": "ücret / işçilik",
+   503→   503→    }
+   504→   504→    for key, vals in by.items():
+   505→   505→        if key == "diger" or len(vals) < 2:
+   506→   506→            continue
+   507→   507→        shown = " / ".join(f"{v:,}".replace(",", ".") + " TL" for v in sorted(vals)[:5])
+   508→   508→        out.append(
+   509→   509→            _finding(
+   510→   510→                KRITIK,
+   511→   511→                "tutar",
+   512→   512→                f"{labels.get(key, key)} için birden fazla tutar: {shown}.",
+   513→   513→                "Açıklama, talep ve sonuç aynı rakamı kullanmalı.",
+   514→   514→            )
+   515→   515→        )
+   516→   516→    ac = {a["value"] for a in model.get("amounts") or [] if a["section"] == "aciklama" and a["label"] in ("istirak", "nafaka", "yoksulluk", "ziynet", "tazminat")}
+   517→   517→    so = {a["value"] for a in model.get("amounts") or [] if a["section"] == "sonuc" and a["label"] in ("istirak", "nafaka", "yoksulluk", "ziynet", "tazminat")}
+   518→   518→    if ac and so and ac != so:
+   519→   519→        out.append(
+   520→   520→            _finding(
+   521→   521→                KRITIK,
+   522→   522→                "talep_capraz",
+   523→   523→                "AÇIKLAMALAR ile SONUÇ VE İSTEM tutarları örtüşmüyor.",
+   524→   524→                "Açıklama → talepler → sonuç çapraz kontrol edilmeli.",
+   525→   525→            )
+   526→   526→        )
+   527→   527→    return out
+   528→   528→
+   529→   529→
+   530→   530→def _law_findings(model: dict, text: str) -> list[dict]:
+   531→   531→    out: list[dict] = []
+   532→   532→    kind = model.get("kind") or ""
+   533→   533→    t = text or ""
+   534→   534→    huk = (model.get("hukuki") or "") + "\n" + t
+   535→   535→    ground = model.get("bosanma_sebebi") or ""
+   536→   536→    if kind == "bosanma":
+   537→   537→        if ground == "166" and re.search(r"(?i)TMK.{0,16}164", huk):
+   538→   538→            out.append(
+   539→   539→                _finding(
+   540→   540→                    KRITIK,
+   541→   541→                    "madde",
+   542→   542→                    "Boşanma sebebi evlilik birliğinin temelinden sarsılması (TMK 166) "
+   543→   543→                    "iken dayanakta TMK 164 geçiyor.",
+   544→   544→                    "İlgili hukuki dayanağı doğrulayın; 164 ile 166 aynı davada karışmamalı.",
+   545→   545→                )
+   546→   546→            )
+   547→   547→        if ground == "164" and re.search(r"(?i)TMK.{0,16}166", huk) and not re.search(r"(?i)TMK.{0,16}164", huk):
+   548→   548→            out.append(
+   549→   549→                _finding(
+   550→   550→                    YUKSEK,
+   551→   551→                    "madde",
+   552→   552→                    "Form terke dayalı (TMK 164); dayanakta 166 yazılmış.",
+   553→   553→                    "İlgili hukuki dayanağı doğrulayın.",
+   554→   554→                )
+   555→   555→            )
+   556→   556→        if re.search(r"(?i)nafaka|velayet|ziynet|tazminat", t) and not re.search(r"TMK|4721", huk + t[:800]):
+   557→   557→            out.append(
+   558→   558→                _finding(
+   559→   559→                    ORTA,
+   560→   560→                    "mevzuat_graf",
+   561→   561→                    "Aile hukuku talebi var; TMK dayanağı zayıf görünüyor.",
+   562→   562→                    "Nafaka / velayet / ziynet / tazminat → TMK; adli yardım → HMK.",
+   563→   563→                )
+   564→   564→            )
+   565→   565→    if kind != "idare" and re.search(r"(?i)7315 sayılı|Atama Uygunluk", t):
+   566→   566→        out.append(
+   567→   567→            _finding(
+   568→   568→                KRITIK,
+   569→   569→                "madde",
+   570→   570→                "Bu dava türünde 7315 / atama uygunluk metni var.",
+   571→   571→                "İdare paketi başka türe taşınmamalı.",
+   572→   572→            )
+   573→   573→        )
+   574→   574→    if kind == "idare" and re.search(r"(?i)ziynet|TMK\s*m\.\s*16[46]", t):
+   575→   575→        out.append(
+   576→   576→            _finding(
+   577→   577→                KRITIK,
+   578→   578→                "madde",
+   579→   579→                "İdare dilekçesinde boşanma / ziynet sızıntısı.",
+   580→   580→                "Dava türü ile mevzuat grafı uyumlu olmalı.",
+   581→   581→            )
+   582→   582→        )
+   583→   583→    if re.search(r"(?i)HAGB|hükmün açıklanmasının geri", model.get("source") or "") and re.search(
+   584→   584→        r"(?i)(?:HAGB|hükmün açıklanmasının geri).{0,60}mahk[ûu]miyet",
+   585→   585→        t,
+   586→   586→    ):
+   587→   587→        out.append(
+   588→   588→            _finding(
+   589→   589→                KRITIK,
+   590→   590→                "hagb",
+   591→   591→                "HAGB mahkûmiyet gibi yazılmış.",
+   592→   592→                "HAGB mahkûmiyet / sabıka değildir; dayanağı CMK m. 231 ile doğrulayın.",
+   593→   593→            )
+   594→   594→        )
+   595→   595→    return out
+   596→   596→
+   597→   597→
+   598→   598→def _fmt_claims(codes: set[str]) -> str:
+   599→   599→    labs = claim_labels(codes)
+   600→   600→    return ", ".join(labs) if labs else "—"
+   601→   601→
+   602→   602→
+   603→   603→def _claim_scan_text(text: str) -> str:
+   604→   604→    """7036 m. 3 genel cümlesindeki 'işe iade' usul gürültüsünü kalem saymaz."""
+   605→   605→    t = text or ""
+   606→   606→    t = re.sub(
+   607→   607→        r"(?i)(?:7036[^\n.]{0,140}|arabulucu[^\n.]{0,80})işe iade[^\n.]{0,80}",
+   608→   608→        " ",
+   609→   609→        t,
+   610→   610→    )
+   611→   611→    t = re.sub(
+   612→   612→        r"(?i)işçi(?:\s+veya\s+işveren)?\s+alacağı,?\s+tazminat ve işe iade",
+   613→   613→        "işçi alacağı",
+   614→   614→        t,
+   615→   615→    )
+   616→   616→    return t
+   617→   617→
+   618→   618→
+   619→   619→def _claim_alignment_findings(model: dict, text: str, form: dict) -> list[dict]:
+   620→   620→    """KONU ≠ gövde/görev ≠ SONUÇ — 48 puanlık iş dilekçesinin ana hatası."""
+   621→   621→    out: list[dict] = []
+   622→   622→    t = text or ""
+   623→   623→    if not (t.strip()):
+   624→   624→        return out
+   625→   625→    konu = _section(t, "KONU", "AÇIKLAMALAR") or _section(t, "DAVA KONUSU", "AÇIKLAMALAR")
+   626→   626→    acik = (
+   627→   627→        _section(t, "AÇIKLAMALAR", "HUKUKİ SEBEPLER")
+   628→   628→        or _section(t, "AÇIKLAMALAR", "DELİLLER")
+   629→   629→        or model.get("olaylar")
+   630→   630→        or ""
+   631→   631→    )
+   632→   632→    son = model.get("sonuc") or _section(t, "SONUÇ VE İSTEM", "EKLER")
+   633→   633→    head = "\n".join((t or "").splitlines()[:18])
+   634→   634→    k = detect_claims(_claim_scan_text(konu)) & TRACK_CLAIMS
+   635→   635→    a = detect_claims(_claim_scan_text(acik)) & TRACK_CLAIMS
+   636→   636→    s = detect_claims(_claim_scan_text(son)) & TRACK_CLAIMS
+   637→   637→    ti = detect_claims(_claim_scan_text(head)) & TRACK_CLAIMS
+   638→   638→    wanted = form_claims(form) & TRACK_CLAIMS
+   639→   639→    if k and s and k != s:
+   640→   640→        out.append(
+   641→   641→            _finding(
+   642→   642→                KRITIK,
+   643→   643→                "konu_sonuc",
+   644→   644→                f"KONU ile SONUÇ VE İSTEM çelişiyor: KONU=[{_fmt_claims(k)}] "
+   645→   645→                f"SONUÇ=[{_fmt_claims(s)}].",
+   646→   646→                "HMK m. 119: konu, açıklama ve sonuç aynı talep kümesini göstermeli.",
+   647→   647→            )
+   648→   648→        )
+   649→   649→    ghost_body = ((a | ti) - s) & TRACK_CLAIMS
+   650→   650→    if ghost_body:
+   651→   651→        out.append(
+   652→   652→            _finding(
+   653→   653→                KRITIK,
+   654→   654→                "talep_tur",
+   655→   655→                "Açıklama / görev satırında SONUÇ'ta olmayan dava türü var: "
+   656→   656→                + _fmt_claims(ghost_body)
+   657→   657→                + ".",
+   658→   658→                "İşe iade + kıdem + ihbar + fazla çalışma dökümü, yalnızca ücret istenen davaya yazılmaz.",
+   659→   659→            )
+   660→   660→        )
+   661→   661→    missing_son = (wanted - s) & TRACK_CLAIMS
+   662→   662→    if missing_son and s:
+   663→   663→        out.append(
+   664→   664→            _finding(
+   665→   665→                YUKSEK,
+   666→   666→                "talep_tur",
+   667→   667→                "Kullanıcı kalemi formda var; SONUÇ'ta yok: " + _fmt_claims(missing_son) + ".",
+   668→   668→                "İstenen kalem sonuç fıkrasına alınır; miktar yoksa uydurulmaz.",
+   669→   669→            )
+   670→   670→        )
+   671→   671→    if "ise_iade" in (k | a | s | wanted) and (FESHE_BAGLI & (k | a | s)):
+   672→   672→        out.append(
+   673→   673→            _finding(
+   674→   674→                YUKSEK,
+   675→   675→                "talep_tur",
+   676→   676→                "İşe iade ile feshe bağlı kıdem / ihbar / yıllık izin aynı dilekçede karışmış.",
+   677→   677→                "İşe iade hükmünde 4857 m. 21 boşta geçen süre ve işe başlatmama tazminatı "
+   678→   678→                "belirlenir. İşe başlatılmama sonrası kıdem-ihbar-izin için ayrı arabuluculuk "
+   679→   679→                "gerekir; önceki işe iade tutanağı bu kalemler için dava şartını karşılamaz.",
+   680→   680→            )
+   681→   681→        )
+   682→   682→    if "ise_iade" in (s | wanted) and not ({"bos_sure", "baslatmama"} & (s | wanted)):
+   683→   683→        out.append(
+   684→   684→            _finding(
+   685→   685→                ORTA,
+   686→   686→                "talep_tur",
+   687→   687→                "İşe iade istenmiş; 4857 m. 21 üçlüsü (boşta geçen süre / işe başlatmama) zayıf.",
+   688→   688→                "İşe iade dilekçesinde iade + boşta geçen süre ücreti + işe başlatmama tazminatı birlikte yazılır; tutar yoksa uydurulmaz.",
+   689→   689→            )
+   690→   690→        )
+   691→   691→    return out
+   692→   692→
+   693→   693→
+   694→   694→def _dayanak_statute_findings(model: dict, text: str, form: dict) -> list[dict]:
+   695→   695→    out: list[dict] = []
+   696→   696→    huk = (model.get("hukuki") or "") + "\n" + (text or "")
+   697→   697→    son = model.get("sonuc") or ""
+   698→   698→    wanted = form_claims(form)
+   699→   699→    active = (detect_claims(son) | wanted) & TRACK_CLAIMS
+   700→   700→    for code, pat in _STATUTE_FOR_CLAIM:
+   701→   701→        if code in active:
+   702→   702→            continue
+   703→   703→        if re.search(pat, huk, re.I):
+   704→   704→            out.append(
+   705→   705→                _finding(
+   706→   706→                    KRITIK if code in LABOR_CLAIMS or code in {"tmk164", "tmk166"} else YUKSEK,
+   707→   707→                    "dayanak_kalem",
+   708→   708→                    f"Dayanakta {claim_labels({code})[0] if claim_labels({code}) else code} "
+   709→   709→                    "maddesi var; bu kalem talep edilmiyor.",
+   710→   710→                    "İstemediğiniz kalemin maddesi ve içtihadı dayanağa eklenmez.",
+   711→   711→                )
+   712→   712→            )
+   713→   713→    kind = model.get("kind") or ""
+   714→   714→    if kind == "is" and re.search(r"(?i)TMK\s*m?\.?\s*16[46]|ziynet|7315 sayılı", huk):
+   715→   715→        out.append(
+   716→   716→            _finding(
+   717→   717→                KRITIK,
+   718→   718→                "dayanak_kalem",
+   719→   719→                "İş dilekçesinin dayanağına aile / 7315 metni girmiş.",
+   720→   720→                "İşçilik alacağı 4857 + 7036 + HMK ile sınırlıdır.",
+   721→   721→            )
+   722→   722→        )
+   723→   723→    return out
+   724→   724→
+   725→   725→
+   726→   726→def _evidence_findings(model: dict, text: str) -> list[dict]:
+   727→   727→    out: list[dict] = []
+   728→   728→    delil = (model.get("deliller") or "") + "\n" + (text or "")
+   729→   729→    acik = model.get("olaylar") or ""
+   730→   730→    blob = acik + "\n" + (text or "")
+   731→   731→    for claim_re, ev_re, title in _CLAIM_EVIDENCE:
+   732→   732→        if re.search(claim_re, blob) and not re.search(ev_re, delil):
+   733→   733→            out.append(
+   734→   734→                _finding(
+   735→   735→                    ORTA,
+   736→   736→                    "delil",
+   737→   737→                    f"{title} iddiası var; bunu destekleyen delil satırı yok.",
+   738→   738→                    "İddia ile DELİLLER arasında bağ kurulmalı; olmayan belge uydurulmaz.",
+   739→   739→                )
+   740→   740→            )
+   741→   741→    return out
+   742→   742→
+   743→   743→
+   744→   744→def _invent_findings(model: dict, text: str) -> list[dict]:
+   745→   745→    out: list[dict] = []
+   746→   746→    src = model.get("source") or ""
+   747→   747→    src_fold = _fold(src)
+   748→   748→    for m in _TCKN_RE.finditer(text or ""):
+   749→   749→        if m.group(1) not in src:
+   750→   750→            out.append(
+   751→   751→                _finding(
+   752→   752→                    KRITIK,
+   753→   753→                    "uydurma",
+   754→   754→                    "Metinde TCKN var; kullanıcı kaynağında yok.",
+   755→   755→                    "Kullanıcı vermediyse üretmeyin; [BİLGİ EKSİK] bırakın.",
+   756→   756→                )
+   757→   757→            )
+   758→   758→            break
+   759→   759→    if _ISO_RE.search(text or ""):
+   760→   760→        out.append(_finding(ORTA, "bicim", "ISO tarih var; gg.aa.yyyy yazılmalı.", ""))
+   761→   761→    for m in re.finditer(r"(?i)tanık\s+([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+(?:\s+[A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü]+)+)", text or ""):
+   762→   762→        name = m.group(1).strip()
+   763→   763→        if _fold(name) not in src_fold:
+   764→   764→            out.append(
+   765→   765→                _finding(
+   766→   766→                    YUKSEK,
+   767→   767→                    "uydurma",
+   768→   768→                    f"Tanık adı ({name}) kullanıcı metninde yok.",
+   769→   769→                    "Tanık, tarih, esas/karar no, tutar kullanıcı vermediyse yazılmaz.",
+   770→   770→                )
+   771→   771→            )
+   772→   772→            break
+   773→   773→    form_vals = {a["value"] for a in model.get("amounts") or [] if a["section"] == "form"}
+   774→   774→    text_vals = {a["value"] for a in model.get("amounts") or [] if a["section"] != "form"}
+   775→   775→    if form_vals and text_vals - form_vals:
+   776→   776→        extra = sorted(text_vals - form_vals)
+   777→   777→        out.append(
+   778→   778→            _finding(
+   779→   779→                YUKSEK,
+   780→   780→                "uydurma",
+   781→   781→                "Formda olmayan tutar metne girmiş: "
+   782→   782→                + ", ".join(f"{v:,}".replace(",", ".") + " TL" for v in extra[:4])
+   783→   783→                + ".",
+   784→   784→                "Kullanıcı vermediyse para miktarı üretilmez.",
+   785→   785→            )
+   786→   786→        )
+   787→   787→    return out
+   788→   788→
+   789→   789→
+   790→   790→def _cite_findings(model: dict, memory: dict | None) -> list[dict]:
+   791→   791→    out: list[dict] = []
+   792→   792→    mem = memory or {}
+   793→   793→    known: list[str] = []
+   794→   794→    for c in mem.get("cites") or []:
+   795→   795→        known.append(str(c))
+   796→   796→    for row in mem.get("aym") or []:
+   797→   797→        if isinstance(row, dict):
+   798→   798→            known.append(str(row.get("kunye") or row.get("baslik") or ""))
+   799→   799→    known_s = " ".join(known)
+   800→   800→    unverified = 0
+   801→   801→    for raw in model.get("cites_text") or []:
+   802→   802→        ek = _CITE_EK_RE.search(raw)
+   803→   803→        bno = _CITE_BNO_RE.search(raw)
+   804→   804→        key = ""
+   805→   805→        if ek:
+   806→   806→            key = ek.group(1)
+   807→   807→        elif bno:
+   808→   808→            key = bno.group(1)
+   809→   809→        if key and key not in known_s:
+   810→   810→            unverified += 1
+   811→   811→    if unverified:
+   812→   812→        out.append(
+   813→   813→            _finding(
+   814→   814→                YUKSEK,
+   815→   815→                "ictihat",
+   816→   816→                f"{unverified} içtihat künyesi tarama hafızasında yok — doğrulanmamış içtihat.",
+   817→   817→                "Esas/karar/tarih/daire eşleşmezse 'bu karar vardır' denmez; künye uydurulmaz.",
+   818→   818→            )
+   819→   819→        )
+   820→   820→    return out
+   821→   821→
+   822→   822→
+   823→   823→def _cite_claim_findings(model: dict, text: str, form: dict) -> list[dict]:
+   824→   824→    if (model.get("kind") or "") != "is":
+   825→   825→        return []
+   826→   826→    claims = form_claims(form)
+   827→   827→    huk = (
+   828→   828→        model.get("hukuki")
+   829→   829→        or _section(text or "", "HUKUKİ SEBEPLER", "DELİLLER")
+   830→   830→        or _section(text or "", "HUKUKİ SEBEPLER", "SONUÇ VE İSTEM")
+   831→   831→        or _section(text or "", "HUKUKİ DAYANAKLAR", "SONUÇ VE İSTEM")
+   832→   832→    )
+   833→   833→    for ln in (huk or "").splitlines():
+   834→   834→        if not re.search(r"(?i)Yargıtay|Danıştay|AYM|E\.\s*\d{4}|B\.\s*No", ln):
+   835→   835→            continue
+   836→   836→        if not cite_fits_claims(ln, claims):
+   837→   837→            return [
+   838→   838→                _finding(
+   839→   839→                    KRITIK,
+   840→   840→                    "dayanak_kalem",
+   841→   841→                    "HUKUKİ DAYANAKLAR’da istenmeyen kaleme ait içtihat satırı var.",
+   842→   842→                    "Ücret davasına işe iade / kıdem / ihbar kararı yapıştırılmaz.",
+   843→   843→                )
+   844→   844→            ]
+   845→   845→    return []
+   846→   846→
+   847→   847→
+   848→   848→def _required_findings(model: dict) -> list[dict]:
+   849→   849→    out: list[dict] = []
+   850→   850→    kind = model.get("kind") or "diger"
+   851→   851→    for key, label in REQUIRED.get(kind, REQUIRED["diger"]):
+   852→   852→        if not _has_field(model, key):
+   853→   853→            sev = YUKSEK if key in ("davaci", "davali", "sonuc", "bosanma_sebebi") else ORTA
+   854→   854→            out.append(
+   855→   855→                _finding(
+   856→   856→                    sev,
+   857→   857→                    "zorunlu",
+   858→   858→                    f"Zorunlu alan eksik ({kind}): {label}.",
+   859→   859→                    "Mahkeme → dava türü → zorunlu alan. Yoksa [BİLGİ EKSİK]; uydurmayın.",
+   860→   860→                )
+   861→   861→            )
+   862→   862→    return out
+   863→   863→
+   864→   864→
+   865→   865→def _subscores(findings: list[dict], model: dict, text: str) -> dict[str, int]:
+   866→   866→    def hit(*codes: str, sev: str | None = None) -> int:
+   867→   867→        n = 0
+   868→   868→        for f in findings:
+   869→   869→            if f["code"] in codes and (sev is None or f["sev"] == sev):
+   870→   870→                n += 1
+   871→   871→        return n
+   872→   872→
+   873→   873→    bicim = 100
+   874→   874→    if not model.get("has_text"):
+   875→   875→        bicim = 40
+   876→   876→    if not re.search(r"(?im)^DAVACI\b", text or ""):
+   877→   877→        bicim -= 20
+   878→   878→    if not re.search(r"(?im)^SONUÇ VE İSTEM\b", text or ""):
+   879→   879→        bicim -= 15
+   880→   880→    if any(f["code"] == "bicim" for f in findings):
+   881→   881→        bicim -= 10
+   882→   882→    veri = 100 - 22 * hit("taraf", "cocuk", "tutar", sev=KRITIK) - 12 * hit("taraf", "cocuk", "tutar")
+   883→   883→    hukuk = (
+   884→   884→        100
+   885→   885→        - 20 * hit("madde", "hagb", "mevzuat_graf", "dayanak_kalem", sev=KRITIK)
+   886→   886→        - 10 * hit("madde", "hagb", "mevzuat_graf", "dayanak_kalem")
+   887→   887→    )
+   888→   888→    talep = (
+   889→   889→        100
+   890→   890→        - 25 * hit("talep_capraz", "tutar", "konu_sonuc", "talep_tur", sev=KRITIK)
+   891→   891→        - 10 * hit("talep_capraz", "konu_sonuc", "talep_tur")
+   892→   892→    )
+   893→   893→    delil = 100 - 12 * hit("delil")
+   894→   894→    dil = 90 if re.search(r"(?i)müvekkil", text or "") else 70
+   895→   895→    if re.search(r"(?i)wikipedia|Vekile Not|formda 164|4\.\s*BÖLÜM", text or ""):
+   896→   896→        dil -= 25
+   897→   897→    ictihat = 100 - 18 * hit("ictihat")
+   898→   898→    if model.get("has_text") and not (model.get("cites_text") or []):
+   899→   899→        ictihat = 70
+   900→   900→    clip = lambda n: max(0, min(100, n))
+   901→   901→    return {
+   902→   902→        "Biçimsel uygunluk": clip(bicim),
+   903→   903→        "Veri tutarlılığı": clip(veri),
+   904→   904→        "Hukuki dayanak": clip(hukuk),
+   905→   905→        "Talep tutarlılığı": clip(talep),
+   906→   906→        "Delil yeterliliği": clip(delil),
+   907→   907→        "Dil ve üslup": clip(dil),
+   908→   908→        "İçtihat doğrulama": clip(ictihat),
+   909→   909→    }
+   910→   910→
+   911→   911→
+   912→   912→def _overall(sub: dict[str, int]) -> int:
+   913→   913→    w = {
+   914→   914→        "Biçimsel uygunluk": 10,
+   915→   915→        "Veri tutarlılığı": 25,
+   916→   916→        "Hukuki dayanak": 15,
+   917→   917→        "Talep tutarlılığı": 15,
+   918→   918→        "Delil yeterliliği": 10,
+   919→   919→        "Dil ve üslup": 10,
+   920→   920→        "İçtihat doğrulama": 15,
+   921→   921→    }
+   922→   922→    s = sum(sub.get(k, 0) * w[k] for k in w)
+   923→   923→    return int(round(s / 100))
+   924→   924→
+   925→   925→
+   926→   926→def _load_memory(memory: dict | None) -> dict:
+   927→   927→    if memory:
+   928→   928→        return memory
+   929→   929→    try:
+   930→   930→        import os
+   931→   931→        import sys
+   932→   932→        from pathlib import Path
+   933→   933→        if sys.platform == "darwin":
+   934→   934→            p = Path.home() / "Library" / "Application Support" / "BetterSaul" / "case_memory.json"
+   935→   935→        else:
+   936→   936→            p = Path(os.environ.get("LOCALAPPDATA") or "") / "BetterSaul" / "case_memory.json"
+   937→   937→        if p.is_file():
+   938→   938→            data = json.loads(p.read_text(encoding="utf-8"))
+   939→   939→            return data if isinstance(data, dict) else {}
+   940→   940→    except Exception:
+   941→   941→        pass
+   942→   942→    return {}
+   943→   943→
+   944→   944→
+   945→   945→def review(form: dict, text: str = "", memory: dict | None = None) -> dict:
+   946→   946→    """İki mod: dilekçe temiz kalır; bu rapor araştırma kutusuna gider."""
+   947→   947→    memory = _load_memory(memory)
+   948→   948→    model = extract_model(form, text)
+   949→   949→    findings = []
+   950→   950→    findings.extend(_required_findings(model))
+   951→   951→    if model.get("has_text"):
+   952→   952→        findings.extend(_party_findings(model, text))
+   953→   953→        findings.extend(_amount_findings(model))
+   954→   954→        findings.extend(_law_findings(model, text))
+   955→   955→        findings.extend(_claim_alignment_findings(model, text, form))
+   956→   956→        findings.extend(_dayanak_statute_findings(model, text, form))
+   957→   957→        findings.extend(_evidence_findings(model, text))
+   958→   958→        findings.extend(_invent_findings(model, text))
+   959→   959→        findings.extend(_cite_findings(model, memory))
+   960→   960→        findings.extend(_cite_claim_findings(model, text, form))
+   961→   961→    motor = _motor_analyze(form, text or "", memory=memory, extra=findings)
+   962→   962→    uniq = motor.get("findings") or findings
+   963→   963→    if motor.get("subscores"):
+   964→   964→        sub = motor["subscores"]
+   965→   965→        score = int(motor.get("score") or 0)
+   966→   966→    else:
+   967→   967→        sub = _subscores(uniq, model, text)
+   968→   968→        score = _overall(sub)
+   969→   969→    gaps = [f["msg"] for f in uniq if f["code"] in ("zorunlu", "bicim", "delil", "zincir")]
+   970→   970→    inc = [f["msg"] for f in uniq if f["code"] not in ("zorunlu", "bicim")]
+   971→   971→    return {
+   972→   972→        "score": score,
+   973→   973→        "breakdown": motor.get("breakdown") or {k: f"{v}/100" for k, v in sub.items()},
+   974→   974→        "subscores": sub,
+   975→   975→        "gaps": gaps,
+   976→   976→        "inconsistencies": inc,
+   977→   977→        "findings": uniq,
+   978→   978→        "model": model,
+   979→   979→        "classifier": motor.get("classifier"),
+   980→   980→        "questions": motor.get("questions") or [],
+   981→   981→        "adversarial": motor.get("adversarial") or [],
+   982→   982→        "claims": motor.get("claims") or {},
+   983→   983→        "critical": bool(motor.get("critical")),
+   984→   984→        "ok": score >= 80 and not any(f["sev"] == KRITIK for f in uniq),
+   985→   985→    }
+   986→   986→
+   987→   987→
+   988→   988→def format_report(rev: dict) -> str:
+   989→   989→    if rev.get("classifier") is not None or rev.get("adversarial") is not None:
+   990→   990→        try:
+   991→   991→            return _motor_report(rev)
+   992→   992→        except Exception:
+   993→   993→            pass
+   994→   994→    score = int(rev.get("score") or 0)
+   995→   995→    lines = [f"Dilekçe kalite testi: {score}/100"]
+   996→   996→    br = rev.get("breakdown") or {}
+   997→   997→    if br:
+   998→   998→        lines.append(" · ".join(f"{k} {v}" for k, v in br.items()))
+   999→   999→    by: dict[str, list[dict]] = {KRITIK: [], YUKSEK: [], ORTA: [], DUSUK: []}
+  1000→  1000→    for f in rev.get("findings") or []:
+  1001→  1001→        by.setdefault(f.get("sev") or ORTA, []).append(f)
+  1002→  1002→    titles = (
+  1003→  1003→        (KRITIK, "Kritik — mahkemeye sunulmadan düzeltilmeli"),
+  1004→  1004→        (YUKSEK, "Yüksek"),
+  1005→  1005→        (ORTA, "Orta"),
+  1006→  1006→        (DUSUK, "Düşük"),
+  1007→  1007→    )
+  1008→  1008→    any_bad = False
+  1009→  1009→    for sev, title in titles:
+  1010→  1010→        items = by.get(sev) or []
+  1011→  1011→        if not items:
+  1012→  1012→            continue
+  1013→  1013→        any_bad = True
+  1014→  1014→        lines.append(f"{_SEV_MARK[sev]} {title}:")
+  1015→  1015→        for f in items[:8]:
+  1016→  1016→            lines.append(f"- {f['msg']}")
+  1017→  1017→            if f.get("hint"):
+  1018→  1018→                lines.append(f"  ({f['hint']})")
+  1019→  1019→    if not any_bad:
+  1020→  1020→        lines.append("YESIL Sorun bulunmayanlar: zorunlu alan, taraf, tutar, madde, içtihat.")
+  1021→  1021→    elif score >= 80 and not by.get(KRITIK):
+  1022→  1022→        lines.append("Kritik yok; yüksek/orta notlar araştırma kutusunda.")
+  1023→  1023→    return "\n".join(lines)
+  1024→  1024→
+  1025→  1025→
+  1026→  1026→def preflight(form: dict) -> str:
+  1027→  1027→    """AI yazmadan önce kart + ön değerlendirme. Eksik alanı doldurmaz."""
+  1028→  1028→    rev = review(form, text="", memory=None)
+  1029→  1029→    model = rev.get("model") or {}
+  1030→  1030→    extra = [
+  1031→  1031→        f"Davacı: {model.get('davaci') or '[BİLGİ GİRİLMEDİ]'}",
+  1032→  1032→        f"Davalı: {model.get('davali') or '[BİLGİ GİRİLMEDİ]'}",
+  1033→  1033→    ]
+  1034→  1034→    if (model.get("kind") or "") == "bosanma":
+  1035→  1035→        extra.append(f"Boşanma sebebi: TMK {model.get('bosanma_sebebi') or '[BİLGİ GİRİLMEDİ]'}")
+  1036→  1036→        extra.append(f"Evlilik: {model.get('evlilik') or '[BİLGİ GİRİLMEDİ]'}")
+  1037→  1037→    miss = [f["msg"] for f in rev.get("findings") or [] if f["code"] == "zorunlu"]
+  1038→  1038→    if miss:
+  1039→  1039→        extra.append("Zorunlu alanlar (üretilmeyecek):")
+  1040→  1040→        extra.extend(f"- {m}" for m in miss[:8])
+  1041→  1041→    try:
+  1042→  1042→        return _motor_preflight(form, extra)
+  1043→  1043→    except Exception:
+  1044→  1044→        return "\n".join(["Yazmadan önce veri kartı."] + extra)
+  1045→  1045→
+  1046→  1046→
+  1047→  1047→def review_text(text: str, petition_type: str = "", source: str = "", memory: dict | None = None) -> str:
+  1048→  1048→    form = {"petitionType": petition_type, "caseSummary": source, "userPrompt": source}
+  1049→  1049→    return format_report(review(form, text, memory=memory))
+  1050→  1050→

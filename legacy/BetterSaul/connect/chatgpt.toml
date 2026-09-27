@@ -1,0 +1,11 @@
+[mcp_servers.BetterSaul]
+command = 'C:\Users\user\AppData\Local\BetterSaul\runtime\python\python.exe'
+args = ['C:\Users\user\AppData\Local\BetterSaul\app\engine\run_mcp.py', '--stdio']
+startup_timeout_sec = 120
+tool_timeout_sec = 120
+enabled = true
+default_tools_approval_mode = "auto"
+
+[mcp_servers.BetterSaul.env]
+PYTHONPATH = 'C:\Users\user\AppData\Local\BetterSaul\app\engine'
+PYTHONUTF8 = '1'

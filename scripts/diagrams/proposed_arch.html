@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Proposed Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1400px; background: #ffffff; font-family: 'Helvetica Neue', Arial, sans-serif; color: #21201e; }
+  .canvas { width: 1400px; padding: 50px 60px; background: #ffffff; }
+  h1 { font-size: 26px; color: #21201e; margin-bottom: 6px; font-weight: 800; }
+  .sub { font-size: 14px; color: #87847d; margin-bottom: 36px; letter-spacing: 0.5px; }
+  .layer { background: #f1f1f0; border-left: 4px solid #61a9c1; padding: 22px 28px; margin-bottom: 22px; border-radius: 4px; }
+  .layer-title { font-size: 16px; font-weight: 700; color: #486684; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 14px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .box { background: #ffffff; border: 1.5px solid #d6d2c5; border-radius: 5px; padding: 14px 16px; flex: 1; min-width: 200px; }
+  .box .name { font-size: 14px; font-weight: 700; color: #21201e; margin-bottom: 4px; }
+  .box .desc { font-size: 12px; color: #486684; line-height: 1.5; }
+  .box .meta { font-size: 11px; color: #87847d; margin-top: 6px; font-family: 'Courier New', monospace; }
+  .arrow { text-align: center; font-size: 22px; color: #61a9c1; margin: 4px 0; font-weight: 300; }
+  .new { background: #f0f7f9; border-left-color: #548c66; }
+  .new .layer-title { color: #548c66; }
+  .legend { margin-top: 24px; padding: 14px 20px; background: #fafaf8; border: 1px solid #d6d2c5; font-size: 11px; color: #5c5542; line-height: 1.7; }
+  .legend b { color: #21201e; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <h1>ÖNERİLEN NEXT.JS WEB PLATFORM MİMARİSİ</h1>
+  <div class="sub">Multi-tenant · Cloud-native · Semantic Search · Provider-abstracted AI</div>
+
+  <div class="layer">
+    <div class="layer-title">CLIENT KATMANI — Next.js 16 + React + TypeScript</div>
+    <div class="row">
+      <div class="box"><div class="name">/dashboard</div><div class="desc">Legal Intelligence Dashboard</div><div class="meta">Son araştırmalar, dilekçeler, hızlı işlemler</div></div>
+      <div class="box"><div class="name">/search</div><div class="desc">Semantic + Keyword Hybrid Search</div><div class="meta">Benzerlik skoru · metadata filtre</div></div>
+      <div class="box"><div class="name">/petitions</div><div class="desc">Dilekçe oluştur + düzenle + versiyon</div><div class="meta">PDF/DOCX export · diff</div></div>
+      <div class="box"><div class="name">/research/[id]</div><div class="desc">Research Trace UI</div><div class="meta">Şeffaf AI adımları</div></div>
+      <div class="box"><div class="name">/chat</div><div class="desc">AI Chat (kaynak gösteren)</div><div class="meta">SSE streaming · tool dispatch</div></div>
+      <div class="box"><div class="name">/documents</div><div class="desc">Kullanıcı dosya yükleme</div><div class="meta">PDF/DOCX parse · OCR · embed</div></div>
+    </div>
+  </div>
+
+  <div class="arrow">↓ HTTPS / SSE / WebSocket</div>
+
+  <div class="layer">
+    <div class="layer-title">API GATEWAY — Next.js API Routes (TypeScript)</div>
+    <div class="row">
+      <div class="box"><div class="name">/api/auth/*</div><div class="desc">NextAuth.js + JWT + RBAC</div><div class="meta">admin/lawyer/user/org_admin</div></div>
+      <div class="box"><div class="name">/api/legal/search/*</div><div class="desc">5 search endpoint (bedesten/deep/mevzuat/aym/rg)</div><div class="meta">Hybrid: BM25 + pgvector + rerank</div></div>
+      <div class="box"><div class="name">/api/petitions/*</div><div class="desc">generate · review · versions · compare · export</div><div class="meta">WeasyPrint + python-docx</div></div>
+      <div class="box"><div class="name">/api/research/*</div><div class="desc">sessions · traces · steps</div><div class="meta">Gerçek araştırma verisi</div></div>
+      <div class="box"><div class="name">/api/documents/upload</div><div class="desc">PDF/DOCX → parse → embed → index</div><div class="meta">Async job queue</div></div>
+      <div class="box"><div class="name">/api/admin/*</div><div class="desc">User mgmt · audit logs · usage</div><div class="meta">Rate limit config</div></div>
+    </div>
+  </div>
+
+  <div class="arrow">↓ Internal HTTP (synchronous) + Job Queue (async)</div>
+
+  <div class="layer">
+    <div class="layer-title">PYTHON LEGAL ENGINE SERVICE — Internal FastAPI Container</div>
+    <div class="row">
+      <div class="box"><div class="name">engine-wrapper</div><div class="desc">Mevcut engine.py modülerleştirilmiş hali</div><div class="meta">research.py · petition.py · llm.py</div></div>
+      <div class="box"><div class="name">mcp-adapter</div><div class="desc">21 MCP aracının FastAPI router'a çevrilmesi</div><div class="meta">18/21 araç doğrudan çevrilebilir</div></div>
+      <div class="box"><div class="name">quality-engine</div><div class="desc">quality.py + motor/pipeline.py (sync→threadpool)</div><div class="meta">17 boyut puanlama · halüsinasyon kontrol</div></div>
+      <div class="box"><div class="name">petition-renderer</div><div class="desc">WeasyPrint + python-docx + Jinja2</div><div class="meta">PDF/DOCX/HTML çıktı</div></div>
+      <div class="box"><div class="name">source-connectors</div><div class="desc">Async httpx + Redis rate-limiter</div><div class="meta">6 hukuk portalı · proxy desteği</div></div>
+    </div>
+  </div>
+
+  <div class="layer new">
+    <div class="layer-title">AI PROVIDER ABSTRACTION (YENİ)</div>
+    <div class="row">
+      <div class="box"><div class="name">OpenAI</div><div class="desc">GPT-4o · GPT-4-Turbo · o1</div><div class="meta">AI_PROVIDER=openai</div></div>
+      <div class="box"><div class="name">Google Gemini</div><div class="desc">Gemini 2.0 Flash · Pro</div><div class="meta">AI_PROVIDER=gemini</div></div>
+      <div class="box"><div class="name">Anthropic</div><div class="desc">Claude 3.5 Sonnet · Haiku</div><div class="meta">AI_PROVIDER=anthropic</div></div>
+      <div class="box"><div class="name">OpenRouter</div><div class="desc">100+ model tek API</div><div class="meta">AI_PROVIDER=openrouter</div></div>
+      <div class="box"><div class="name">Ollama / llama.cpp</div><div class="desc">Qwen 2.5/3 (legacy uyumluluk)</div><div class="meta">AI_PROVIDER=ollama</div></div>
+      <div class="box"><div class="name">Router</div><div class="desc">Provider seçici + fallback + retry</div><div class="meta">env-driven · cost-aware</div></div>
+    </div>
+  </div>
+
+  <div class="layer new">
+    <div class="layer-title">HYBRID SEARCH ENGINE (YENİ)</div>
+    <div class="row">
+      <div class="box"><div class="name">Semantic Search</div><div class="desc">multilingual-e5-large (1024d) veya OpenAI embed (1536d)</div><div class="meta">pgvector + HNSW index</div></div>
+      <div class="box"><div class="name">Keyword Search</div><div class="desc">PostgreSQL FTS (tsvector) + BM25 rank</div><div class="meta">Türkçe stopwords · stemming</div></div>
+      <div class="box"><div class="name">Metadata Filter</div><div class="desc">court · chamber · date · type · source</div><div class="meta">Pre-filter before rerank</div></div>
+      <div class="box"><div class="name">Reranker</div><div class="desc">Cross-encoder (bge-reranker-tr)</div><div class="meta">Top-50 → Top-10</div></div>
+      <div class="box"><div class="name">Query Expansion</div><div class="desc">AI tabanlı sinonim/kavram genişletme</div><div class="meta">"güvenlik soruşturması" → "arşiv araştırması, atanma..."</div></div>
+    </div>
+  </div>
+
+  <div class="layer new">
+    <div class="layer-title">VERİTABANI — PostgreSQL 16 + pgvector</div>
+    <div class="row">
+      <div class="box"><div class="name">users · organizations</div><div class="desc">Multi-tenant auth + RBAC</div><div class="meta">subscriptions · api_keys</div></div>
+      <div class="box"><div class="name">cases · case_parties</div><div class="desc">Dava yönetimi + taraflar</div><div class="meta">documents · citations</div></div>
+      <div class="box"><div class="name">legal_decisions</div><div class="desc">9M+ içtihat (partitioned by year)</div><div class="meta">court · chamber · decision_no</div></div>
+      <div class="box"><div class="name">document_chunks</div><div class="desc">Belgelerin parçalanmış hali</div><div class="meta">chunk_text · metadata JSONB</div></div>
+      <div class="box"><div class="name">document_embeddings</div><div class="desc">pgvector 1536d · HNSW index</div><div class="meta">cosine similarity</div></div>
+      <div class="box"><div class="name">statutes · statute_articles</div><div class="desc">Versiyonlu mevzuat (v1/v2/current)</div><div class="meta">effective_from · effective_to</div></div>
+      <div class="box"><div class="name">petitions · petition_versions</div><div class="desc">Dilekçe + sürüm geçmişi</div><div class="meta">diff · compare · rollback</div></div>
+      <div class="box"><div class="name">research_sessions · traces</div><div class="desc">AI araştırma şeffaflık kayıtı</div><div class="meta">audit_logs · ai_runs</div></div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">ASYNC JOB QUEUE — Redis + BullMQ</div>
+    <div class="row">
+      <div class="box"><div class="name">Import Pipeline</div><div class="desc">9M+ belge → parse → chunk → embed → index</div><div class="meta">Queue → Worker → Vector DB</div></div>
+      <div class="box"><div class="name">Source Sync</div><div class="desc">Scheduled: Yargıtay/Danıştay/AYM/Mevzuat</div><div class="meta">Changed? → Version → Re-embed</div></div>
+      <div class="box"><div class="name">Document Upload</div><div class="desc">User PDF/DOCX → OCR → embed</div><div class="meta">User private vector index</div></div>
+      <div class="box"><div class="name">AI Research</div><div class="desc">Long-running research sessions</div><div class="meta">SSE progress streaming</div></div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">STORAGE & INFRASTRUCTURE</div>
+    <div class="row">
+      <div class="box"><div class="name">S3-Compatible</div><div class="desc">PDF/DOCX dosya storage</div><div class="meta">MinIO veya AWS S3</div></div>
+      <div class="box"><div class="name">Redis</div><div class="desc">Cache + Rate limit + Session</div><div class="meta">Source portal 429 cooldown</div></div>
+      <div class="box"><div class="name">Vercel / Docker</div><div class="desc">Next.js frontend + API routes</div><div class="meta">Edge functions mümkün</div></div>
+      <div class="box"><div class="name">Python Container</div><div class="desc">FastAPI internal service</div><div class="meta">Docker · k8s · horizontal scale</div></div>
+      <div class="box"><div class="name">Observability</div><div class="desc">Sentry + OpenTelemetry + Grafana</div><div class="meta">Audit logging · metrics</div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>İletişim Akışı:</b> Browser → Next.js API routes → (sync) Python service OR (async) Job Queue → PostgreSQL + pgvector<br>
+    <b>Multi-tenant:</b> Her org kendi cases/petitions/documents · Legal sources global · Embeddings user-private + global<br>
+    <b>Yeni Kabiliyetler:</b> Semantic search · Çok-kullanıcılı · Provider abstraction · Versiyonlu mevzuat · Research trace · Document upload<br>
+    <b>Korunan Değerler:</b> Mevcut 21 MCP aracı · 17-boyut kalite kontrol · 10 dava türü tespiti · Halüsinasyon kontrolü · 12 dilekçe şablonu
+  </div>
+</div>
+</body>
+</html>

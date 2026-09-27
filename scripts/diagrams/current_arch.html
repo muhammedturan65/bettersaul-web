@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Current Architecture</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1400px; background: #ffffff; font-family: 'Helvetica Neue', Arial, sans-serif; color: #21201e; }
+  .canvas { width: 1400px; padding: 50px 60px; background: #ffffff; }
+  h1 { font-size: 26px; color: #21201e; margin-bottom: 6px; font-weight: 800; }
+  .sub { font-size: 14px; color: #87847d; margin-bottom: 36px; letter-spacing: 0.5px; }
+  .layer { background: #f1f1f0; border-left: 4px solid #746b4f; padding: 22px 28px; margin-bottom: 22px; border-radius: 4px; }
+  .layer-title { font-size: 16px; font-weight: 700; color: #5c5542; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 14px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .box { background: #ffffff; border: 1.5px solid #d6d2c5; border-radius: 5px; padding: 14px 16px; flex: 1; min-width: 220px; }
+  .box .name { font-size: 14px; font-weight: 700; color: #21201e; margin-bottom: 4px; }
+  .box .desc { font-size: 12px; color: #5c5542; line-height: 1.5; }
+  .box .meta { font-size: 11px; color: #87847d; margin-top: 6px; font-family: 'Courier New', monospace; }
+  .arrow { text-align: center; font-size: 22px; color: #746b4f; margin: 4px 0; font-weight: 300; }
+  .critical { background: #fff5f3; border-left-color: #8e4f49; }
+  .critical .layer-title { color: #8e4f49; }
+  .legend { margin-top: 24px; padding: 14px 20px; background: #fafaf8; border: 1px solid #d6d2c5; font-size: 11px; color: #5c5542; line-height: 1.7; }
+  .legend b { color: #21201e; }
+</style>
+</head>
+<body>
+<div class="canvas">
+  <h1>MEVCUT BETTERSaul MİMARİSİ</h1>
+  <div class="sub">Desktop (Windows) · WebView2 IPC · Local Qwen · MCP over stdio/HTTP</div>
+
+  <div class="layer">
+    <div class="layer-title">UI KATMANI — WinForms (C#) + Edge WebView2</div>
+    <div class="row">
+      <div class="box"><div class="name">index.html</div><div class="desc">Vanilla JS SPA, 1790 satır IIFE</div><div class="meta">446 satır HTML · 30 IPC komut</div></div>
+      <div class="box"><div class="name">app.js</div><div class="desc">73KB JS, framework yok</div><div class="meta">IPC mesajlaşma · WebView2 native</div></div>
+      <div class="box"><div class="name">app.css</div><div class="desc">Dark theme, 18 custom property</div><div class="meta">31 hex renk · 7 backdrop-filter</div></div>
+    </div>
+  </div>
+
+  <div class="arrow">↓ JSON-line IPC over stdin/stdout</div>
+
+  <div class="layer">
+    <div class="layer-title">PYTHON ENGINE KATMANI — engine.py (7,857 satır)</div>
+    <div class="row">
+      <div class="box"><div class="name">engine.py</div><div class="desc">Ana motor: stdin→JSON parse→dispatch→emit</div><div class="meta">main() satır 7816 · emit() satır 87</div></div>
+      <div class="box"><div class="name">legal_tracks.py</div><div class="desc">10 dava türü regex tespiti</div><div class="meta">detect_track() satır 34</div></div>
+      <div class="box"><div class="name">petition_packs.py</div><div class="desc">10 dava türü statik şablon</div><div class="meta">197 satır</div></div>
+      <div class="box"><div class="name">Prompts</div><div class="desc">system + petition + turkish_reason</div><div class="meta">3 .txt dosya · FILL_ANATOMY runtime</div></div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">MCP PAKETİ — bettersaul_mcp/ (21 araç)</div>
+    <div class="row">
+      <div class="box"><div class="name">server.py</div><div class="desc">MCP server, 348 satır</div><div class="meta">stdio / http / https transport</div></div>
+      <div class="box"><div class="name">sources.py</div><div class="desc">6 kaynak HTTP scraper</div><div class="meta">907 satır · Yargıtay/Danıştay/Emsal/AYM/RG/Mevzuat</div></div>
+      <div class="box"><div class="name">anayasa.py</div><div class="desc">AYM API entegrasyonu</div><div class="meta">342 satır · BB/ND arama</div></div>
+      <div class="box"><div class="name">mevzuat.py</div><div class="desc">11 kanun hardcoded katalog</div><div class="meta">355 satır · versiyonlama YOK</div></div>
+      <div class="box"><div class="name">petition_tools.py</div><div class="desc">Dilekçe oluşturma + PDF</div><div class="meta">1218 satır · browser subprocess</div></div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">KALİTE & MOTOR — quality.py + motor/</div>
+    <div class="row">
+      <div class="box"><div class="name">quality.py</div><div class="desc">Regex-tabanlı 17 boyut puanlama</div><div class="meta">1049 satır · LLM-as-judge YOK</div></div>
+      <div class="box"><div class="name">motor/pipeline.py</div><div class="desc">19 sync pipeline aşaması</div><div class="meta">807 satır · async DEĞİL</div></div>
+      <div class="box"><div class="name">motor/catalog.py</div><div class="desc">15 dava alanı + 80+ talep</div><div class="meta">426 satır · sabit veri</div></div>
+      <div class="box"><div class="name">motor/stages.py</div><div class="desc">LLM prompt builder (PASİF)</div><div class="meta">391 satır · bağlı DEĞİL</div></div>
+      <div class="box"><div class="name">templates.py</div><div class="desc">12 dava türü plain text</div><div class="meta">548 satır · HTML/PDF YOK</div></div>
+    </div>
+  </div>
+
+  <div class="layer critical">
+    <div class="layer-title">AI INFERENCE — TAMAMEN YEREL (Desktop Hardware)</div>
+    <div class="row">
+      <div class="box"><div class="name">Qwen 2.5 / Qwen 3</div><div class="desc">7B · 9B · 14B · 27B parametre</div><div class="meta">llama-server HTTP · llama-cpp · llama-cli</div></div>
+      <div class="box"><div class="name">3 Inference Yolu</div><div class="desc">HTTP API / Python binding / subprocess</div><div class="meta">engine.py satır 2222, 2641, 2822</div></div>
+      <div class="box"><div class="name">Agentic Multi-Turn</div><div class="desc">MAX_TURNS=8 · RESEARCH_ROUNDS=3</div><div class="meta">TOOL_RE regex ile tool dispatch</div></div>
+      <div class="box"><div class="name">Sağlayıcı Çeşitliliği</div><div class="desc">SADECE Qwen local</div><div class="meta">OpenAI/Gemini/Anthropic YOK</div></div>
+    </div>
+  </div>
+
+  <div class="layer critical">
+    <div class="layer-title">VERİ & ARAMA — KRİTİK EKSİKLİKLER</div>
+    <div class="row">
+      <div class="box"><div class="name">archive.db (SQLite)</div><div class="desc">2 tablo: chats + petitions</div><div class="meta">0 FK · 0 trigger · 0 veri</div></div>
+      <div class="box"><div class="name">Semantic Search</div><div class="desc">YOK · embedding YOK</div><div class="meta">pgvector YOK · Chroma YOK</div></div>
+      <div class="box"><div class="name">BM25 / Reranking</div><div class="desc">YOK · query expansion YOK</div><div class="meta">Hybrid search YOK</div></div>
+      <div class="box"><div class="name">Arama Stratejisi</div><div class="desc">Uzak portala HTTP POST delege</div><div class="meta">Yargıtay/Danıştay/Emsal siteleri</div></div>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-title">DESKTOP RUNTIME BAĞIMLILIKLARI</div>
+    <div class="row">
+      <div class="box"><div class="name">Python 3.12 Bundled</div><div class="desc">runtime/python/ Windows AMD64</div><div class="meta">uvicorn · pydantic_core · mcp SDK</div></div>
+      <div class="box"><div class="name">Edge WebView2</div><div class="desc">webview/EBWebView/ user data</div><div class="meta">.NET hostobjects.sync köprü</div></div>
+      <div class="box"><div class="name">session.bin (DPAPI)</div><div class="desc">Windows DPAPI encrypted blob</div><div class="meta">614 byte · magic 01000000 D08C9DDF</div></div>
+      <div class="box"><div class="name">Self-signed TLS</div><div class="desc">certs/mcp-cert.pem (CN=BetterSaul)</div><div class="meta">https://127.0.0.1:8000/mcp</div></div>
+      <div class="box"><div class="name">license_gate.py</div><div class="desc">Windows winreg + HMAC</div><div class="meta">245 satır · 2 ay expiry</div></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>İletişim Akışı:</b> WinForms (C#) → stdin JSON-line → engine.py (Python) → emit() JSON → stdout → WinForms → WebView2 postMessage → app.js<br>
+    <b>MCP Erişimi:</b> app.js → IPC → engine.py → MCP server (stdio/http) → 21 araç → 6 hukuk portalı (HTTP scrape)<br>
+    <b>Kritik Riskler:</b> Tek dosya 7857 satır · Windows-only path'ler · Uzak portal bağımlılığı · Semantic search eksik · Çok-kullanıcılı mimari YOK
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,908 @@
+     1→     1→"""BetterSaul MCP — resmi kamu karar/arama sitelerine doğrudan HTTP."""
+     2→     2→from __future__ import annotations
+     3→     3→
+     4→     4→import json
+     5→     5→import re
+     6→     6→import time
+     7→     7→from datetime import date, datetime, timedelta
+     8→     8→from typing import Any
+     9→     9→from urllib.parse import urljoin
+    10→    10→
+    11→    11→import httpx
+    12→    12→
+    13→    13→UA = (
+    14→    14→    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    15→    15→    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    16→    16→)
+    17→    17→YARGITAY = "https://karararama.yargitay.gov.tr"
+    18→    18→EMSAL = "https://emsal.uyap.gov.tr"
+    19→    19→DANISTAY = "https://karararama.danistay.gov.tr"
+    20→    20→RG = "https://www.resmigazete.gov.tr"
+    21→    21→COURT_YARGITAY = ["YARGITAYKARARI"]
+    22→    22→COURT_EMSAL = ["YERELHUKUK", "ISTINAFHUKUK", "KYB"]
+    23→    23→COURT_DANISTAY = ["DANISTAYKARAR"]
+    24→    24→_DOC_HINTS: dict[str, tuple[str, str]] = {}
+    25→    25→_LIMITED_UNTIL = 0.0
+    26→    26→_COURT_LOCK = ""
+    27→    27→_LOCK_AT = 0.0
+    28→    28→_YARGITAY_MARK = re.compile(
+    29→    29→    r"Yarg[ıi]tay|Asliye\s+Ticaret|Ticaret\s+Mahkeme|\d+\.\s*Hukuk\s+Dairesi|Ceza\s+Dairesi",
+    30→    30→    re.I,
+    31→    31→)
+    32→    32→_STOP_WORDS = {
+    33→    33→    "danistay",
+    34→    34→    "danıştay",
+    35→    35→    "yargitay",
+    36→    36→    "yargıtay",
+    37→    37→    "emsal",
+    38→    38→    "karar",
+    39→    39→    "kararı",
+    40→    40→    "dava",
+    41→    41→    "davasi",
+    42→    42→    "davası",
+    43→    43→    "ile",
+    44→    44→    "icin",
+    45→    45→    "için",
+    46→    46→    "veya",
+    47→    47→    "gibi",
+    48→    48→    "olan",
+    49→    49→    "olarak",
+    50→    50→    "uzerine",
+    51→    51→    "üzerine",
+    52→    52→}
+    53→    53→
+    54→    54→
+    55→    55→_VERIFY = None
+    56→    56→
+    57→    57→
+    58→    58→def _verify_ctx():
+    59→    59→    """Sistem sertifika deposu (truststore) + certifi yedeği.
+    60→    60→
+    61→    61→    Bazı kamu siteleri (mevzuat.gov.tr, resmigazete.gov.tr) ara sertifika
+    62→    62→    zincirini eksik gönderir; certifi tek başına doğrulayamaz. İşletim
+    63→    63→    sisteminin deposu eksik zinciri tamamlayabildiğinden önce o denenir.
+    64→    64→    """
+    65→    65→    global _VERIFY
+    66→    66→    if _VERIFY is not None:
+    67→    67→        return _VERIFY
+    68→    68→    try:
+    69→    69→        import ssl
+    70→    70→
+    71→    71→        import truststore
+    72→    72→
+    73→    73→        _VERIFY = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    74→    74→    except Exception:
+    75→    75→        _VERIFY = True
+    76→    76→    return _VERIFY
+    77→    77→
+    78→    78→
+    79→    79→def _client(base: str | None = None) -> httpx.Client:
+    80→    80→    headers = {
+    81→    81→        "User-Agent": UA,
+    82→    82→        "Accept": "application/json, text/javascript, text/html, */*; q=0.8",
+    83→    83→        "X-Requested-With": "XMLHttpRequest",
+    84→    84→    }
+    85→    85→    if base:
+    86→    86→        headers["Origin"] = base
+    87→    87→        headers["Referer"] = base.rstrip("/") + "/"
+    88→    88→    return httpx.Client(
+    89→    89→        timeout=httpx.Timeout(28.0, connect=10.0),
+    90→    90→        follow_redirects=True,
+    91→    91→        headers=headers,
+    92→    92→        verify=_verify_ctx(),
+    93→    93→    )
+    94→    94→
+    95→    95→
+    96→    96→def _dump(obj: Any, limit: int = 14000) -> str:
+    97→    97→    text = json.dumps(obj, ensure_ascii=False, indent=2) if not isinstance(obj, str) else obj
+    98→    98→    return text if len(text) <= limit else text[:limit] + "\n…"
+    99→    99→
+   100→   100→
+   101→   101→def _plain(html: str) -> str:
+   102→   102→    html = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html or "")
+   103→   103→    html = re.sub(r"(?is)<svg\b.*?</svg>", " ", html)
+   104→   104→    html = re.sub(r"(?s)<[^>]+>", " ", html)
+   105→   105→    html = re.sub(r"&nbsp;|&amp;|&quot;|&#39;", " ", html)
+   106→   106→    text = re.sub(r"\s+", " ", html).strip()
+   107→   107→    if re.search(
+   108→   108→        r"image/svg|svg\+xml|böyle bir içerik mevcut değildir|"
+   109→   109→        r"Bilgi İşlem Genel Müdürlüğü|Uygulama içerisinde böyle bir içerik|"
+   110→   110→        r"(?:HTTP\s+)?404(?:\s+Uygulama|\s+Not Found|\s+Sayfa)|"
+   111→   111→        r"Erişim Sınırı Aşıldı",
+   112→   112→        text,
+   113→   113→        re.I,
+   114→   114→    ):
+   115→   115→        return ""
+   116→   116→    return text
+   117→   117→
+   118→   118→
+   119→   119→def _as_dict(data: Any) -> dict[str, Any]:
+   120→   120→    return data if isinstance(data, dict) else {"raw": data}
+   121→   121→
+   122→   122→
+   123→   123→def _rows_from(data: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+   124→   124→    blob = data.get("data") if isinstance(data.get("data"), dict) else data
+   125→   125→    hits = (
+   126→   126→        blob.get("data")
+   127→   127→        or blob.get("records")
+   128→   128→        or blob.get("content")
+   129→   129→        or blob.get("items")
+   130→   130→        or blob.get("decisions")
+   131→   131→        or data.get("data")
+   132→   132→        or []
+   133→   133→    )
+   134→   134→    if isinstance(hits, dict):
+   135→   135→        hits = hits.get("records") or hits.get("content") or hits.get("items") or []
+   136→   136→    if not isinstance(hits, list):
+   137→   137→        hits = []
+   138→   138→    rows: list[dict[str, Any]] = []
+   139→   139→    for item in hits[:60]:
+   140→   140→        if not isinstance(item, dict):
+   141→   141→            continue
+   142→   142→        ozet = (
+   143→   143→            item.get("ozet")
+   144→   144→            or item.get("kararOzeti")
+   145→   145→            or item.get("ozetMetin")
+   146→   146→            or item.get("aciklama")
+   147→   147→            or item.get("kararOzet")
+   148→   148→            or item.get("snippet")
+   149→   149→            or ""
+   150→   150→        )
+   151→   151→        if not isinstance(ozet, str):
+   152→   152→            ozet = str(ozet or "")
+   153→   153→        rows.append(
+   154→   154→            {
+   155→   155→                "documentId": item.get("id") or item.get("documentId") or item.get("kararId"),
+   156→   156→                "birimAdi": item.get("daireKurul")
+   157→   157→                or item.get("daire")
+   158→   158→                or item.get("birimAdi")
+   159→   159→                or item.get("mahkeme"),
+   160→   160→                "esasNo": item.get("esasNo") or item.get("esas") or (
+   161→   161→                    f"{item.get('esasNoYil')}/{item.get('esasNoSira')}"
+   162→   162→                    if item.get("esasNoYil") not in (None, "") and item.get("esasNoSira") not in (None, "")
+   163→   163→                    else ""
+   164→   164→                ),
+   165→   165→                "kararNo": item.get("kararNo") or item.get("karar") or (
+   166→   166→                    f"{item.get('kararNoYil')}/{item.get('kararNoSira')}"
+   167→   167→                    if item.get("kararNoYil") not in (None, "") and item.get("kararNoSira") not in (None, "")
+   168→   168→                    else ""
+   169→   169→                ),
+   170→   170→                "kararTarihi": item.get("kararTarihiStr") or item.get("kararTarihi") or item.get("tarih"),
+   171→   171→                "baslik": item.get("baslik") or item.get("title") or item.get("kurum"),
+   172→   172→                "ozet": _plain(ozet)[:420] if ozet else "",
+   173→   173→            }
+   174→   174→        )
+   175→   175→    total = blob.get("recordsTotal") or blob.get("total") or blob.get("toplam") or len(rows)
+   176→   176→    try:
+   177→   177→        total = int(total)
+   178→   178→    except (TypeError, ValueError):
+   179→   179→        total = len(rows)
+   180→   180→    return rows, total
+   181→   181→
+   182→   182→
+   183→   183→def _rate_limited(res: httpx.Response) -> bool:
+   184→   184→    if res.status_code == 429:
+   185→   185→        return True
+   186→   186→    return bool(re.search(r"Erişim Sınırı Aşıldı|erisim siniri", res.text or "", re.I))
+   187→   187→
+   188→   188→
+   189→   189→def _mark_limited(seconds: float = 50.0) -> None:
+   190→   190→    global _LIMITED_UNTIL
+   191→   191→    _LIMITED_UNTIL = time.time() + seconds
+   192→   192→
+   193→   193→
+   194→   194→def _is_cooling() -> bool:
+   195→   195→    return time.time() < _LIMITED_UNTIL
+   196→   196→
+   197→   197→
+   198→   198→def _remember_docs(base: str, phrase: str, rows: list[dict[str, Any]]) -> None:
+   199→   199→    for item in rows:
+   200→   200→        doc_id = str(item.get("documentId") or "").strip()
+   201→   201→        if doc_id:
+   202→   202→            _DOC_HINTS[doc_id] = (base, phrase)
+   203→   203→
+   204→   204→
+   205→   205→def _apply_court_lock(court_types: list[str] | None) -> None:
+   206→   206→    global _COURT_LOCK, _LOCK_AT
+   207→   207→    courts = [str(c).upper() for c in (court_types or [])]
+   208→   208→    if courts and all("DANISTAY" in c for c in courts):
+   209→   209→        _COURT_LOCK = "danistay"
+   210→   210→        _LOCK_AT = time.time()
+   211→   211→    elif courts and all("YARGITAY" in c or c == "YARGITAYKARARI" for c in courts):
+   212→   212→        _COURT_LOCK = "yargitay"
+   213→   213→        _LOCK_AT = time.time()
+   214→   214→
+   215→   215→
+   216→   216→def _active_lock() -> str:
+   217→   217→    if time.time() - _LOCK_AT > 1800:
+   218→   218→        return ""
+   219→   219→    return _COURT_LOCK
+   220→   220→
+   221→   221→
+   222→   222→def _tokens(phrase: str) -> list[str]:
+   223→   223→    words = re.findall(r"[A-Za-zÇĞİÖŞÜçğıöşü0-9]{3,}", phrase or "")
+   224→   224→    out: list[str] = []
+   225→   225→    for w in words:
+   226→   226→        fold = w.replace("İ", "i").replace("I", "i").lower()
+   227→   227→        if fold in _STOP_WORDS or w in out:
+   228→   228→            continue
+   229→   229→        out.append(w)
+   230→   230→        if len(out) >= 5:
+   231→   231→            break
+   232→   232→    return out or [((phrase or "").strip()[:80] or "iptal")]
+   233→   233→
+   234→   234→
+   235→   235→def _search_body(base: str, phrase: str, page: int, size: int) -> dict[str, Any]:
+   236→   236→    if "danistay" in base:
+   237→   237→        words = _tokens(phrase)
+   238→   238→        # Portal düz gövdeyi Runtime exception ile düşürür; data sarmalayıcı zorunlu.
+   239→   239→        if len((phrase or "").strip()) <= 80:
+   240→   240→            and_words = [(phrase or "").strip()]
+   241→   241→            or_words: list[str] = []
+   242→   242→        else:
+   243→   243→            and_words = words[:2] or [(phrase or "").strip()[:80] or "iptal"]
+   244→   244→            or_words = words[2:5]
+   245→   245→        return {
+   246→   246→            "data": {
+   247→   247→                "andKelimeler": and_words,
+   248→   248→                "orKelimeler": or_words,
+   249→   249→                "notAndKelimeler": [],
+   250→   250→                "notOrKelimeler": [],
+   251→   251→                "pageNumber": page,
+   252→   252→                "pageSize": min(size, 10),
+   253→   253→            }
+   254→   254→        }
+   255→   255→    return {
+   256→   256→        "data": {
+   257→   257→            "aranan": phrase,
+   258→   258→            "arananKelime": phrase,
+   259→   259→            "pageSize": min(size, 20),
+   260→   260→            "pageNumber": page,
+   261→   261→        }
+   262→   262→    }
+   263→   263→
+   264→   264→
+   265→   265→def _rows_from_html(html: str) -> list[dict[str, Any]]:
+   266→   266→    text = html or ""
+   267→   267→    ids = re.findall(r"getDokuman\(\s*['\"](\d{5,})['\"]", text)
+   268→   268→    ids += re.findall(r'data-(?:id|documentid)=[\'"](\d{5,})[\'"]', text, re.I)
+   269→   269→    ids += re.findall(r'documentId["\s:=]+(\d{5,})', text)
+   270→   270→    ids += re.findall(r"[?&]id=(\d{5,})", text)
+   271→   271→    ids += re.findall(r"\bid\s*[:=]\s*['\"](\d{5,})['\"]", text)
+   272→   272→    seen: set[str] = set()
+   273→   273→    ordered: list[str] = []
+   274→   274→    for doc_id in ids:
+   275→   275→        if doc_id not in seen:
+   276→   276→            seen.add(doc_id)
+   277→   277→            ordered.append(doc_id)
+   278→   278→    rows: list[dict[str, Any]] = []
+   279→   279→    blocks = re.findall(
+   280→   280→        r"(?:Danıştay|Daire|Kurul)[^<]{0,80}.*?(\d{4}/\d{1,6})[^<]{0,40}(\d{4}/\d{1,6})",
+   281→   281→        _plain(text),
+   282→   282→        re.I,
+   283→   283→    )
+   284→   284→    for i, doc_id in enumerate(ordered[:40]):
+   285→   285→        esas, karar = ("", "")
+   286→   286→        if i < len(blocks):
+   287→   287→            esas, karar = blocks[i]
+   288→   288→        rows.append(
+   289→   289→            {
+   290→   290→                "documentId": doc_id,
+   291→   291→                "birimAdi": "Danıştay" if "danistay" in text.lower() else "",
+   292→   292→                "esasNo": esas,
+   293→   293→                "kararNo": karar,
+   294→   294→                "kararTarihi": "",
+   295→   295→                "baslik": "",
+   296→   296→                "ozet": "",
+   297→   297→            }
+   298→   298→        )
+   299→   299→    return rows
+   300→   300→
+   301→   301→
+   302→   302→def _forced_bases(court_types: list[str] | None) -> list[tuple[str, str]]:
+   303→   303→    courts = [str(c).upper() for c in (court_types or [])]
+   304→   304→    if (courts and all("DANISTAY" in c for c in courts)) or (not courts and _active_lock() == "danistay"):
+   305→   305→        return [(DANISTAY, "Danıştay")]
+   306→   306→    if (courts and all("YARGITAY" in c or c == "YARGITAYKARARI" for c in courts)) or (
+   307→   307→        not courts and _active_lock() == "yargitay"
+   308→   308→    ):
+   309→   309→        return [(YARGITAY, "Yargıtay")]
+   310→   310→    if courts and all(c in COURT_EMSAL or "EMSAL" in c or "YEREL" in c or "ISTINAF" in c for c in courts):
+   311→   311→        return [(EMSAL, "Emsal (yerel / istinaf / KYB)")]
+   312→   312→    return []
+   313→   313→
+   314→   314→
+   315→   315→def _target_bases(phrase: str, court_types: list[str] | None = None) -> list[tuple[str, str]]:
+   316→   316→    forced = _forced_bases(court_types)
+   317→   317→    if forced:
+   318→   318→        return forced
+   319→   319→    fold = (phrase or "").replace("İ", "i").replace("I", "i").replace("ı", "i").lower()
+   320→   320→    if any(
+   321→   321→        k in fold
+   322→   322→        for k in (
+   323→   323→            "danistay",
+   324→   324→            "iyuk",
+   325→   325→            "idari",
+   326→   326→            "iptal dav",
+   327→   327→            "tam yargi",
+   328→   328→            "2577",
+   329→   329→            "yurutmenin durdur",
+   330→   330→            "guvenlik sorustur",
+   331→   331→            "memuriyet",
+   332→   332→            "kamu gorev",
+   333→   333→            "kamu görev",
+   334→   334→            "657 say",
+   335→   335→        )
+   336→   336→    ):
+   337→   337→        return [(DANISTAY, "Danıştay")]
+   338→   338→    if any(k in fold for k in ("istinaf", "yerel mahkeme", " emsal", "kyb")):
+   339→   339→        return [(EMSAL, "Emsal (yerel / istinaf / KYB)")]
+   340→   340→    return [(YARGITAY, "Yargıtay")]
+   341→   341→
+   342→   342→
+   343→   343→def _row_fits(base: str, item: dict[str, Any]) -> bool:
+   344→   344→    if "danistay" not in (base or ""):
+   345→   345→        return True
+   346→   346→    blob = " ".join(str(item.get(k) or "") for k in ("birimAdi", "baslik", "ozet", "kaynak"))
+   347→   347→    return not _YARGITAY_MARK.search(blob)
+   348→   348→
+   349→   349→
+   350→   350→def _portal_search(base: str, phrase: str, page_size: int = 50, page_number: int = 1) -> dict[str, Any]:
+   351→   351→    phrase = (phrase or "").strip()
+   352→   352→    if not phrase:
+   353→   353→        return {"error": "Arama ifadesi boş."}
+   354→   354→    if _is_cooling():
+   355→   355→        return {"error": "Erişim sınırı", "phrase": phrase, "kaynak": base}
+   356→   356→    size = max(10, min(int(page_size or 10), 20))
+   357→   357→    page = max(1, min(int(page_number or 1), 4))
+   358→   358→    body = _search_body(base, phrase, page, size)
+   359→   359→    last = "Arama yanıt vermedi."
+   360→   360→    with _client(base) as http:
+   361→   361→        try:
+   362→   362→            res = http.post(base + "/aramalist", json=body)
+   363→   363→        except Exception as exc:
+   364→   364→            return {"error": str(exc), "phrase": phrase, "kaynak": base}
+   365→   365→        last = f"HTTP {res.status_code}"
+   366→   366→        if _rate_limited(res):
+   367→   367→            _mark_limited()
+   368→   368→            return {"error": "Erişim sınırı", "phrase": phrase, "kaynak": base}
+   369→   369→        if res.status_code >= 400:
+   370→   370→            return {"error": last, "phrase": phrase, "kaynak": base}
+   371→   371→        try:
+   372→   372→            data = _as_dict(res.json())
+   373→   373→            if isinstance(data.get("metadata"), dict) and data["metadata"].get("FMTY") == "ERROR":
+   374→   374→                last = data["metadata"].get("FMTE") or last
+   375→   375→                return {"error": last, "phrase": phrase, "kaynak": base}
+   376→   376→            rows, total = _rows_from(data)
+   377→   377→            if not rows and data.get("data") not in (None, {}, []):
+   378→   378→                rows = _rows_from_html(_dump(data.get("data")))
+   379→   379→                total = total or len(rows)
+   380→   380→            rows = [r for r in rows if _row_fits(base, r)]
+   381→   381→            if rows:
+   382→   382→                _remember_docs(base, phrase, rows)
+   383→   383→            return {
+   384→   384→                "kaynak": base,
+   385→   385→                "phrase": phrase,
+   386→   386→                "sayfa": page,
+   387→   387→                "toplam": total,
+   388→   388→                "decisions": rows,
+   389→   389→            }
+   390→   390→        except Exception:
+   391→   391→            rows = [r for r in _rows_from_html(res.text) if _row_fits(base, r)]
+   392→   392→            if rows:
+   393→   393→                _remember_docs(base, phrase, rows)
+   394→   394→                return {
+   395→   395→                    "kaynak": base,
+   396→   396→                    "phrase": phrase,
+   397→   397→                    "sayfa": page,
+   398→   398→                    "toplam": len(rows),
+   399→   399→                    "decisions": rows,
+   400→   400→                }
+   401→   401→    return {"error": last, "phrase": phrase, "kaynak": base}
+   402→   402→
+   403→   403→
+   404→   404→def _maybe_b64(raw: str) -> str:
+   405→   405→    t = (raw or "").strip()
+   406→   406→    if len(t) < 80 or len(t) % 4:
+   407→   407→        return ""
+   408→   408→    if not re.fullmatch(r"[A-Za-z0-9+/=\s]+", t):
+   409→   409→        return ""
+   410→   410→    try:
+   411→   411→        import base64
+   412→   412→
+   413→   413→        out = base64.b64decode(t, validate=False)
+   414→   414→        for enc in ("utf-8", "cp1254", "latin-1"):
+   415→   415→            try:
+   416→   416→                text = out.decode(enc)
+   417→   417→            except Exception:
+   418→   418→                continue
+   419→   419→            if "<" in text or len(text) > 80:
+   420→   420→                return text
+   421→   421→    except Exception:
+   422→   422→        return ""
+   423→   423→    return ""
+   424→   424→
+   425→   425→
+   426→   426→def _doc_from_payload(data: Any) -> str:
+   427→   427→    if isinstance(data, str):
+   428→   428→        plain = _plain(data)
+   429→   429→        if len(plain) >= 40:
+   430→   430→            return plain[:16000]
+   431→   431→        decoded = _maybe_b64(data)
+   432→   432→        return _plain(decoded)[:16000] if decoded else ""
+   433→   433→    if not isinstance(data, dict):
+   434→   434→        return ""
+   435→   435→    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+   436→   436→    if str(meta.get("FMTY") or "").upper() == "ERROR":
+   437→   437→        return ""
+   438→   438→    blob = data.get("data")
+   439→   439→    if blob is None:
+   440→   440→        blob = data.get("content") or data.get("dokuman") or data.get("html")
+   441→   441→    if isinstance(blob, str):
+   442→   442→        return _doc_from_payload(blob)
+   443→   443→    if isinstance(blob, dict):
+   444→   444→        for key in ("content", "html", "dokuman", "document", "text", "data"):
+   445→   445→            val = blob.get(key)
+   446→   446→            if isinstance(val, str) and val.strip():
+   447→   447→                got = _doc_from_payload(val)
+   448→   448→                if got:
+   449→   449→                    return got
+   450→   450→    return ""
+   451→   451→
+   452→   452→
+   453→   453→def _decode_doc_response(res: httpx.Response) -> str:
+   454→   454→    if res.status_code >= 400:
+   455→   455→        return ""
+   456→   456→    text = res.text or ""
+   457→   457→    ctype = (res.headers.get("content-type") or "").lower()
+   458→   458→    if "json" in ctype or text.lstrip().startswith("{") or text.lstrip().startswith("["):
+   459→   459→        try:
+   460→   460→            return _doc_from_payload(res.json())
+   461→   461→        except Exception:
+   462→   462→            return ""
+   463→   463→    plain = _plain(text)
+   464→   464→    return plain[:16000] if len(plain) > 80 else ""
+   465→   465→
+   466→   466→
+   467→   467→def _portal_document(base: str, document_id: str, aranan: str = "") -> str:
+   468→   468→    document_id = (document_id or "").strip()
+   469→   469→    if not document_id:
+   470→   470→        return "documentId boş."
+   471→   471→    if _is_cooling():
+   472→   472→        return "Erişim sınırı"
+   473→   473→    hint = aranan or (_DOC_HINTS.get(document_id) or ("", ""))[1]
+   474→   474→    if "danistay" in base:
+   475→   475→        word = hint or "iptal"
+   476→   476→        qs = httpx.QueryParams({"id": document_id, "arananKelime": word})
+   477→   477→        url = f"{base}/getDokuman?{qs}"
+   478→   478→    else:
+   479→   479→        url = f"{base}/getDokuman?id={document_id}"
+   480→   480→    with _client(base) as http:
+   481→   481→        try:
+   482→   482→            res = http.get(url)
+   483→   483→        except Exception as exc:
+   484→   484→            return str(exc)
+   485→   485→        if _rate_limited(res):
+   486→   486→            _mark_limited()
+   487→   487→            return "Erişim sınırı"
+   488→   488→        text = _decode_doc_response(res)
+   489→   489→        if text:
+   490→   490→            return text
+   491→   491→        return f"HTTP {res.status_code}"
+   492→   492→
+   493→   493→
+   494→   494→def _courts_base(court_types: list[str] | None) -> str:
+   495→   495→    courts = [str(c).upper() for c in (court_types or [])]
+   496→   496→    if any("DANISTAY" in c for c in courts):
+   497→   497→        return DANISTAY
+   498→   498→    if any(c in COURT_EMSAL or "EMSAL" in c or "YEREL" in c or "ISTINAF" in c for c in courts):
+   499→   499→        return EMSAL
+   500→   500→    return YARGITAY
+   501→   501→
+   502→   502→
+   503→   503→def _row_key(item: dict[str, Any]) -> str:
+   504→   504→    e = str(item.get("esasNo") or "").strip()
+   505→   505→    k = str(item.get("kararNo") or "").strip()
+   506→   506→    d = str(item.get("documentId") or "").strip()
+   507→   507→    if e or k:
+   508→   508→        return f"{e}|{k}"
+   509→   509→    return d or str(item.get("baslik") or "")
+   510→   510→
+   511→   511→
+   512→   512→def _merge_rows(dest: list[dict[str, Any]], incoming: list[dict[str, Any]]) -> None:
+   513→   513→    seen = {_row_key(x) for x in dest if _row_key(x)}
+   514→   514→    for item in incoming:
+   515→   515→        key = _row_key(item)
+   516→   516→        if not key or key in seen:
+   517→   517→            continue
+   518→   518→        seen.add(key)
+   519→   519→        dest.append(item)
+   520→   520→
+   521→   521→
+   522→   522→def _search_bases(
+   523→   523→    phrase: str,
+   524→   524→    pages: int = 2,
+   525→   525→    page_size: int = 50,
+   526→   526→    court_types: list[str] | None = None,
+   527→   527→) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+   528→   528→    _apply_court_lock(court_types)
+   529→   529→    packs: list[dict[str, Any]] = []
+   530→   530→    rows: list[dict[str, Any]] = []
+   531→   531→    grand = 0
+   532→   532→    for base, label in _target_bases(phrase, court_types):
+   533→   533→        taken = 0
+   534→   534→        total = 0
+   535→   535→        err = ""
+   536→   536→        for page in range(1, max(1, pages) + 1):
+   537→   537→            data = _portal_search(base, phrase, page_size=page_size, page_number=page)
+   538→   538→            if data.get("error"):
+   539→   539→                err = str(data["error"])
+   540→   540→                if page == 1:
+   541→   541→                    packs.append({"kaynak": label, "url": base, "sayfa": page, "hata": err})
+   542→   542→                break
+   543→   543→            total = int(data.get("toplam") or total or 0)
+   544→   544→            found = list(data.get("decisions") or [])
+   545→   545→            if not found:
+   546→   546→                break
+   547→   547→            before = len(rows)
+   548→   548→            for item in found:
+   549→   549→                item["kaynak"] = label
+   550→   550→                item["sorgu"] = phrase
+   551→   551→            _merge_rows(rows, found)
+   552→   552→            taken += len(rows) - before
+   553→   553→            if len(found) < 8:
+   554→   554→                break
+   555→   555→        if taken or total:
+   556→   556→            grand += total
+   557→   557→            packs.append({"kaynak": label, "url": base, "havuz": total, "alinan": taken, "sorgu": phrase})
+   558→   558→        elif err and not any(p.get("kaynak") == label and p.get("hata") for p in packs):
+   559→   559→            packs.append({"kaynak": label, "url": base, "hata": err, "sorgu": phrase})
+   560→   560→    return packs, rows, grand
+   561→   561→
+   562→   562→
+   563→   563→def extract_holding(plain: str, limit: int = 520) -> str:
+   564→   564→    text = _plain(plain or "")
+   565→   565→    if len(text) < 40:
+   566→   566→        return text[:limit]
+   567→   567→    chunks: list[str] = []
+   568→   568→    for mark in ("SONUÇ", "HÜKÜM", "GEREKÇE", "bu nedenle", "sonuç olarak", "açıklanan nedenlerle"):
+   569→   569→        idx = text.upper().find(mark.upper()) if mark.isupper() else text.lower().find(mark.lower())
+   570→   570→        if idx >= 0:
+   571→   571→            piece = text[idx : idx + 700]
+   572→   572→            chunks.append(piece)
+   573→   573→    if not chunks:
+   574→   574→        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
+   575→   575→        keep = [
+   576→   576→            s
+   577→   577→            for s in sents
+   578→   578→            if any(
+   579→   579→                w in s.lower()
+   580→   580→                for w in (
+   581→   581→                    "boşan",
+   582→   582→                    "kusur",
+   583→   583→                    "sadakat",
+   584→   584→                    "velayet",
+   585→   585→                    "nafaka",
+   586→   586→                    "tazminat",
+   587→   587→                    "fesih",
+   588→   588→                    "alacak",
+   589→   589→                    "iptal",
+   590→   590→                    "haksız",
+   591→   591→                )
+   592→   592→            )
+   593→   593→        ]
+   594→   594→        chunks = keep[:4] or sents[:3]
+   595→   595→    out = " ".join(chunks)
+   596→   596→    out = re.sub(r"\s+", " ", out).strip()
+   597→   597→    return out[:limit]
+   598→   598→
+   599→   599→
+   600→   600→def search_corpus(phrase: str, pages: int = 2, court_types: list[str] | None = None) -> str:
+   601→   601→    """Tek ifadeyle kilitli mahkeme havuzu (İdare = yalnızca Danıştay)."""
+   602→   602→    _apply_court_lock(court_types)
+   603→   603→    phrase = (phrase or "").strip()
+   604→   604→    if not phrase:
+   605→   605→        return _dump({"error": "Arama ifadesi boş."})
+   606→   606→    packs, rows, grand = _search_bases(phrase, pages=1, court_types=court_types)
+   607→   607→    return _dump(
+   608→   608→        {
+   609→   609→            "phrase": phrase,
+   610→   610→            "gecis": "derin",
+   611→   611→            "taranan_havuz": grand,
+   612→   612→            "kaynaklar": packs,
+   613→   613→            "decisions": rows[:56],
+   614→   614→        },
+   615→   615→        limit=36000,
+   616→   616→    )
+   617→   617→
+   618→   618→
+   619→   619→def search_corpus_deep(
+   620→   620→    phrases: list[str] | str,
+   621→   621→    pages: int = 2,
+   622→   622→    court_types: list[str] | None = None,
+   623→   623→) -> str:
+   624→   624→    _apply_court_lock(court_types)
+   625→   625→    if isinstance(phrases, str):
+   626→   626→        raw = [p.strip() for p in re.split(r"[;\n|]+", phrases) if p.strip()]
+   627→   627→    else:
+   628→   628→        raw = [str(p).strip() for p in (phrases or []) if str(p).strip()]
+   629→   629→    qs = []
+   630→   630→    for q in raw:
+   631→   631→        if q and q not in qs:
+   632→   632→            qs.append(q)
+   633→   633→    qs = qs[:2]
+   634→   634→    if not qs:
+   635→   635→        return _dump({"error": "Arama ifadesi boş."})
+   636→   636→    packs: list[dict[str, Any]] = []
+   637→   637→    rows: list[dict[str, Any]] = []
+   638→   638→    grand = 0
+   639→   639→    for phrase in qs:
+   640→   640→        if _is_cooling():
+   641→   641→            packs.append({"hata": "Erişim sınırı", "sorgu": phrase})
+   642→   642→            break
+   643→   643→        pks, found, total = _search_bases(phrase, pages=1, court_types=court_types)
+   644→   644→        packs.extend(pks)
+   645→   645→        grand += total
+   646→   646→        _merge_rows(rows, found)
+   647→   647→        if any("sınır" in str(p.get("hata") or "") for p in pks):
+   648→   648→            break
+   649→   649→    return _dump(
+   650→   650→        {
+   651→   651→            "sorgular": qs,
+   652→   652→            "gecis": "coklu-derin",
+   653→   653→            "taranan_havuz": grand,
+   654→   654→            "kaynaklar": packs,
+   655→   655→            "decisions": rows[:72],
+   656→   656→        },
+   657→   657→        limit=48000,
+   658→   658→    )
+   659→   659→
+   660→   660→
+   661→   661→def search_bedesten(phrase: str, court_types: list[str] | None = None) -> str:
+   662→   662→    _apply_court_lock(court_types)
+   663→   663→    phrase = (phrase or "").strip()
+   664→   664→    if not phrase:
+   665→   665→        return _dump({"error": "Arama ifadesi boş."})
+   666→   666→    base, label = _target_bases(phrase, court_types)[0]
+   667→   667→    data = _portal_search(base, phrase, page_size=10, page_number=1)
+   668→   668→    if isinstance(data, dict) and "error" not in data:
+   669→   669→        data["kaynak_adi"] = label
+   670→   670→    return _dump(data)
+   671→   671→
+   672→   672→
+   673→   673→def get_bedesten_document(document_id: str) -> str:
+   674→   674→    document_id = (document_id or "").strip()
+   675→   675→    hint = _DOC_HINTS.get(document_id)
+   676→   676→    if hint:
+   677→   677→        return _portal_document(hint[0], document_id, aranan=hint[1])
+   678→   678→    if _active_lock() == "danistay":
+   679→   679→        return _portal_document(DANISTAY, document_id)
+   680→   680→    return _portal_document(YARGITAY, document_id)
+   681→   681→
+   682→   682→
+   683→   683→def get_bedesten_holding(document_id: str) -> str:
+   684→   684→    """Bedesten'de holding ucu yoktur; belge çekilip yerelde özetlenir."""
+   685→   685→    text = get_bedesten_document(document_id)
+   686→   686→    if not text or text.startswith("HTTP ") or "alınamadı" in text or "boş" in text[:20]:
+   687→   687→        return text
+   688→   688→    return extract_holding(text)
+   689→   689→
+   690→   690→
+   691→   691→def search_emsal(keyword: str, page_number: int = 1) -> str:
+   692→   692→    return _dump(_portal_search(EMSAL, keyword, page_size=50, page_number=page_number))
+   693→   693→
+   694→   694→
+   695→   695→def _parse_rg_date(raw: str) -> date | None:
+   696→   696→    t = (raw or "").strip()
+   697→   697→    if not t:
+   698→   698→        return None
+   699→   699→    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%Y%m%d", "%d/%m/%Y"):
+   700→   700→        try:
+   701→   701→            return datetime.strptime(t[:10] if fmt != "%Y%m%d" else re.sub(r"\D", "", t)[:8], fmt).date()
+   702→   702→        except ValueError:
+   703→   703→            continue
+   704→   704→    m = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", t)
+   705→   705→    if m:
+   706→   706→        try:
+   707→   707→            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+   708→   708→        except ValueError:
+   709→   709→            return None
+   710→   710→    m = re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", t)
+   711→   711→    if m:
+   712→   712→        try:
+   713→   713→            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+   714→   714→        except ValueError:
+   715→   715→            return None
+   716→   716→    return None
+   717→   717→
+   718→   718→
+   719→   719→def _rg_fold(s: str) -> str:
+   720→   720→    t = (s or "").replace("İ", "i").replace("I", "i")
+   721→   721→    table = str.maketrans({"ı": "i", "İ": "i", "ö": "o", "Ö": "o", "ü": "u", "Ü": "u", "ş": "s", "Ş": "s", "ğ": "g", "Ğ": "g", "ç": "c", "Ç": "c"})
+   722→   722→    return t.translate(table).lower()
+   723→   723→
+   724→   724→
+   725→   725→def _rg_day_urls(day: date) -> list[str]:
+   726→   726→    y, m, compact = day.strftime("%Y"), day.strftime("%m"), day.strftime("%Y%m%d")
+   727→   727→    iso = day.strftime("%Y-%m-%d")
+   728→   728→    return [
+   729→   729→        f"{RG}/fihrist?tarih={iso}",
+   730→   730→        f"{RG}/eskiler/{y}/{m}/{compact}.htm",
+   731→   731→    ]
+   732→   732→
+   733→   733→
+   734→   734→def _rg_item_url(day: date, item: str) -> str:
+   735→   735→    y, m, compact = day.strftime("%Y"), day.strftime("%m"), day.strftime("%Y%m%d")
+   736→   736→    num = re.sub(r"\D", "", item or "") or "1"
+   737→   737→    return f"{RG}/eskiler/{y}/{m}/{compact}-{num}.htm"
+   738→   738→
+   739→   739→
+   740→   740→def _rg_entries(html: str, page_url: str = "") -> list[dict[str, str]]:
+   741→   741→    rows: list[dict[str, str]] = []
+   742→   742→    seen: set[str] = set()
+   743→   743→    base = page_url or (RG + "/")
+   744→   744→    for href, title in re.findall(r'href=["\']([^"\']+)["\'][^>]*>([^<]{8,240})', html or "", re.I):
+   745→   745→        if href.startswith("#") or "javascript:" in href.lower():
+   746→   746→            continue
+   747→   747→        if not re.search(r"(?i)eskiler|fihrist|ilanlar|\.htm|\.pdf|\d{8}-\d+", href):
+   748→   748→            continue
+   749→   749→        url = urljoin(base, href).split("#")[0]
+   750→   750→        if url in seen:
+   751→   751→            continue
+   752→   752→        tit = _plain(title)
+   753→   753→        if len(tit) < 8 or re.search(r"(?i)pdf görüntüle|önceki sayı|sonraki sayı|mobil uygulaması", tit):
+   754→   754→            continue
+   755→   755→        seen.add(url)
+   756→   756→        rows.append({"baslik": tit[:220], "url": url})
+   757→   757→        if len(rows) >= 40:
+   758→   758→            break
+   759→   759→    if not rows and page_url:
+   760→   760→        text = _plain(html)
+   761→   761→        if text:
+   762→   762→            rows.append({"baslik": text[:180], "url": page_url})
+   763→   763→    return rows
+   764→   764→
+   765→   765→
+   766→   766→def get_resmi_gazete_fihrist(date_text: str) -> str:
+   767→   767→    day = _parse_rg_date(date_text)
+   768→   768→    if not day:
+   769→   769→        return _dump({"kaynak": "Resmî Gazete", "sonuc": "taranamadı", "neden": "tarih yok"})
+   770→   770→    last = "fihrist yok"
+   771→   771→    with _client(RG) as http:
+   772→   772→        http.headers["Accept"] = "text/html,application/xhtml+xml,*/*"
+   773→   773→        for url in _rg_day_urls(day):
+   774→   774→            try:
+   775→   775→                res = http.get(url)
+   776→   776→                last = f"HTTP {res.status_code}"
+   777→   777→                if res.status_code >= 400:
+   778→   778→                    continue
+   779→   779→                html = res.text or ""
+   780→   780→                if re.search(r"(?i)böyle bir içerik mevcut değildir|404", html):
+   781→   781→                    continue
+   782→   782→                rows = _rg_entries(html, str(res.url))
+   783→   783→                if rows:
+   784→   784→                    return _dump(
+   785→   785→                        {
+   786→   786→                            "kaynak": "Resmî Gazete",
+   787→   787→                            "tarih": day.isoformat(),
+   788→   788→                            "url": str(res.url),
+   789→   789→                            "kayitlar": rows[:30],
+   790→   790→                        }
+   791→   791→                    )
+   792→   792→            except Exception as exc:
+   793→   793→                last = str(exc)
+   794→   794→    return _dump({"kaynak": "Resmî Gazete", "tarih": day.isoformat(), "sonuc": "taranamadı", "neden": last})
+   795→   795→
+   796→   796→
+   797→   797→def get_resmi_gazete_document(url_or_date_and_item: str) -> str:
+   798→   798→    raw = (url_or_date_and_item or "").strip()
+   799→   799→    if not raw:
+   800→   800→        return _dump({"ok": False, "sonuc": "taranamadı"})
+   801→   801→    url = raw
+   802→   802→    if not raw.startswith("http"):
+   803→   803→        day = _parse_rg_date(raw)
+   804→   804→        item = ""
+   805→   805→        m = re.search(r"(?:^|\s)(\d{1,3})(?:\s*$)", raw)
+   806→   806→        if m:
+   807→   807→            item = m.group(1)
+   808→   808→        dash = re.search(r"(\d{8})-(\d{1,3})", raw)
+   809→   809→        if dash:
+   810→   810→            day = _parse_rg_date(dash.group(1))
+   811→   811→            item = dash.group(2)
+   812→   812→        if day:
+   813→   813→            url = _rg_item_url(day, item or "1") if item else _rg_day_urls(day)[1]
+   814→   814→    try:
+   815→   815→        with _client(RG) as http:
+   816→   816→            http.headers["Accept"] = "text/html,application/xhtml+xml,*/*"
+   817→   817→            res = http.get(url)
+   818→   818→            if res.status_code >= 400:
+   819→   819→                return _dump({"ok": False, "sonuc": "taranamadı", "url": url, "neden": f"HTTP {res.status_code}"})
+   820→   820→            text = _plain(res.text)
+   821→   821→    except Exception as exc:
+   822→   822→        return _dump({"ok": False, "sonuc": "taranamadı", "url": url, "neden": str(exc)})
+   823→   823→    if not text:
+   824→   824→        return _dump({"ok": False, "sonuc": "taranamadı", "url": url, "neden": "404/svg"})
+   825→   825→    return _dump({"ok": True, "kaynak": "Resmî Gazete", "url": url, "metin": text[:6000]})
+   826→   826→
+   827→   827→
+   828→   828→def search_resmi_gazete(query: str, date_start: str = "", date_end: str = "") -> str:
+   829→   829→    q = (query or "").strip()
+   830→   830→    if not q:
+   831→   831→        return _dump({"error": "Arama ifadesi boş.", "sonuc": "taranamadı"})
+   832→   832→    start = _parse_rg_date(date_start)
+   833→   833→    end = _parse_rg_date(date_end) or start
+   834→   834→    days: list[date] = []
+   835→   835→    if start:
+   836→   836→        cur = start
+   837→   837→        last = end or start
+   838→   838→        if last < cur:
+   839→   839→            cur, last = last, cur
+   840→   840→        while cur <= last and len(days) < 14:
+   841→   841→            days.append(cur)
+   842→   842→            cur += timedelta(days=1)
+   843→   843→    else:
+   844→   844→        today = date.today()
+   845→   845→        days = [today - timedelta(days=i) for i in range(0, 8)]
+   846→   846→    found: list[dict[str, str]] = []
+   847→   847→    last = "kayıt yok"
+   848→   848→    qlow = _rg_fold(q)
+   849→   849→    with _client(RG) as http:
+   850→   850→        http.headers["Accept"] = "text/html,application/xhtml+xml,*/*"
+   851→   851→        homes = [f"{RG}/", f"{RG}/eskiler/", f"{RG}/fihrist"]
+   852→   852→        if not start:
+   853→   853→            for url in homes:
+   854→   854→                try:
+   855→   855→                    res = http.get(url)
+   856→   856→                    if res.status_code >= 400:
+   857→   857→                        last = f"HTTP {res.status_code}"
+   858→   858→                        continue
+   859→   859→                    last = f"HTTP {res.status_code}"
+   860→   860→                    html = res.text or ""
+   861→   861→                    text = _plain(html)
+   862→   862→                    fold = _rg_fold(text)
+   863→   863→                    if qlow in fold:
+   864→   864→                        idx = fold.find(qlow)
+   865→   865→                        found.append({"baslik": text[max(0, idx - 80) : idx + 220], "url": str(res.url)})
+   866→   866→                    for row in _rg_entries(html, str(res.url)):
+   867→   867→                        if qlow in _rg_fold(row.get("baslik") or "") or qlow in _rg_fold(row.get("url") or ""):
+   868→   868→                            found.append(row)
+   869→   869→                except Exception as exc:
+   870→   870→                    last = str(exc)
+   871→   871→        for day in days:
+   872→   872→            if len(found) >= 12:
+   873→   873→                break
+   874→   874→            for url in _rg_day_urls(day):
+   875→   875→                try:
+   876→   876→                    res = http.get(url)
+   877→   877→                    if res.status_code >= 400:
+   878→   878→                        continue
+   879→   879→                    last = f"HTTP {res.status_code}"
+   880→   880→                    html = res.text or ""
+   881→   881→                    if re.search(r"(?i)böyle bir içerik mevcut değildir", html):
+   882→   882→                        continue
+   883→   883→                    text = _plain(html)
+   884→   884→                    rows = _rg_entries(html, str(res.url))
+   885→   885→                    matched = [r for r in rows if qlow in _rg_fold(r.get("baslik") or "")]
+   886→   886→                    fold = _rg_fold(text)
+   887→   887→                    if not matched and qlow in fold:
+   888→   888→                        idx = fold.find(qlow)
+   889→   889→                        matched = [{"baslik": text[max(0, idx - 80) : idx + 220], "url": str(res.url), "tarih": day.isoformat()}]
+   890→   890→                    for row in matched:
+   891→   891→                        row.setdefault("tarih", day.isoformat())
+   892→   892→                        found.append(row)
+   893→   893→                    if matched:
+   894→   894→                        break
+   895→   895→                except Exception as exc:
+   896→   896→                    last = str(exc)
+   897→   897→    uniq: list[dict[str, str]] = []
+   898→   898→    seen: set[str] = set()
+   899→   899→    for row in found:
+   900→   900→        key = (row.get("url") or "") + (row.get("baslik") or "")[:80]
+   901→   901→        if key in seen:
+   902→   902→            continue
+   903→   903→        seen.add(key)
+   904→   904→        uniq.append(row)
+   905→   905→    if not uniq:
+   906→   906→        return _dump({"kaynak": "Resmî Gazete", "query": q, "sonuc": "taranamadı", "neden": last, "kayitlar": []})
+   907→   907→    return _dump({"kaynak": "Resmî Gazete", "query": q, "kayitlar": uniq[:12]})
+   908→   908→

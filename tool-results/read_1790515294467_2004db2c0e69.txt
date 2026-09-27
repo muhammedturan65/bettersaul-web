@@ -1,0 +1,602 @@
+  5300→    )
+  5301→    for a, b in reps:
+  5302→        t = t.replace(a, b)
+  5303→
+  5304→    def _iyelik(m: re.Match[str]) -> str:
+  5305→        w = m.group(1)
+  5306→        name = w[:1].upper() + w[1:] if w[:1].islower() else w
+  5307→        return name + "'ın"
+  5308→
+  5309→    t = re.sub(r"\b([A-Za-zÇĞİÖŞÜçğıöşü]{3,})\s+[ıi]n\b", _iyelik, t)
+  5310→    t = re.sub(r"\b([A-ZÇĞİÖŞÜ][a-zçğıöşü]+)\s+[ıi]nın\b", r"\1'ının", t)
+  5311→    t = re.sub(r"(?i)(?:^|(?<=[.!?]\s))[^.]*boşanmak istiyorum[^.]*\.?\s*", "", t)
+  5312→    t = re.sub(r"(?i)\s*Nihayet\s+[^.]*istiyorum[^.]*\.?", "", t)
+  5313→    t = re.sub(r"(?im)^\s*DAVA D[İI]LEK[ÇC]ES[İI]\s*$\n?", "", t)
+  5314→    t = strip_template_notes(t)
+  5315→    t = reconcile_date_span(t)
+  5316→    kept: list[str] = []
+  5317→    for para in re.split(r"\n{2,}", t):
+  5318→        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", para) if s.strip()]
+  5319→        clean = [s for s in sents if not _is_petition_question(s) and not _is_prompt_block(s)]
+  5320→        if clean:
+  5321→            kept.append(" ".join(clean))
+  5322→    t = "\n\n".join(kept) if kept else t
+  5323→    t = re.sub(r"(?i)\s*Bu süreçte\s+", " ", t)
+  5324→    t = re.sub(r"(?i)\s*;\s*müteakiben\s+", ". ", t)
+  5325→    return _strip_instr_leaks(_strip_portal_junk(t))
+  5326→
+  5327→
+  5328→def _reason_tr_pass(text: str) -> str:
+  5329→    raw = (text or "").strip()
+  5330→    if len(raw) < 48:
+  5331→        return _polish_tr(raw)
+  5332→    if _is_27b() and not _server_health():
+  5333→        emit("status", "4/4 Türkçe editör: sunucu kapalı, yalnızca yazım düzeltmesi.")
+  5334→        emit("research", "Türkçe editör atlandı (27B sunucusu yok; kilitlenmesin).")
+  5335→        return _polish_tr(raw)
+  5336→    emit("status", "4/4 Türkçe editör turu: anlatım ve yazım denetleniyor…")
+  5337→    emit("research", "Türkçe editör: özne-yüklem, bağlaç, hukuki karşılık, TDK.")
+  5338→    guide = TR_REASON or "Türkçe muhakeme et; TDK yazımına uy; anlamı değiştirme."
+  5339→    out = generate(
+  5340→        [
+  5341→            {
+  5342→                "role": "system",
+  5343→                "content": (
+  5344→                    "Sen kıdemli bir Türk hukuk yazım editörüsün. Vakıayı, ismi, tutarı ve "
+  5345→                    "karar numarasını değiştirmezsin. Yalnızca Türkçe muhakeme ederek cümleyi "
+  5346→                    "düzeltirsin. Talimat sızdırmazsın. Yanıtın yalnızca düzeltilmiş metin olsun."
+  5347→                ),
+  5348→            },
+  5349→            {
+  5350→                "role": "user",
+  5351→                "content": (
+  5352→                    f"{guide}\n\nAşağıdaki metni aynı hukuki içeriği koruyarak yeniden yaz. "
+  5353→                    "Yeni vakıa ekleme. Yalnızca düzeltilmiş metni yaz.\n\n"
+  5354→                    + raw[:12000]
+  5355→                ),
+  5356→            },
+  5357→        ],
+  5358→        n_predict=min(2048, max(400, len(raw) // 2 + 240)),
+  5359→        n_ctx=CHAT_CTX,
+  5360→        live=False,
+  5361→        busy="Türkçe editör turu…",
+  5362→        think=False,
+  5363→    )
+  5364→    out = _polish_tr(_fix_word_spacing(_usable_text(out) or _clean_llama_out(out) or ""))
+  5365→    if len(out) < max(80, int(len(raw) * 0.45)):
+  5366→        emit("status", "Türkçe editör kısa kaldı; ilk metin yazımla düzeltildi.")
+  5367→        return _polish_tr(raw)
+  5368→    emit("status", "Türkçe editör turu bitti.")
+  5369→    return out
+  5370→
+  5371→
+  5372→def _chrono_sents(sents: list[str]) -> list[str]:
+  5373→    aylar = {
+  5374→        "ocak": 1, "şubat": 2, "mart": 3, "nisan": 4, "mayıs": 5, "haziran": 6,
+  5375→        "temmuz": 7, "ağustos": 8, "eylül": 9, "ekim": 10, "kasım": 11, "aralık": 12,
+  5376→    }
+  5377→
+  5378→    def key(s: str) -> tuple[int, int, int]:
+  5379→        m = re.search(r"(\d{1,2})[./](\d{1,2})[./](\d{4})", s or "")
+  5380→        if m:
+  5381→            return (int(m.group(3)), int(m.group(2)), int(m.group(1)))
+  5382→        m = re.search(r"(\d{1,2})\s+(ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)\s+(\d{4})", s or "", re.I)
+  5383→        if m:
+  5384→            return (int(m.group(3)), aylar.get(m.group(2).lower(), 12), int(m.group(1)))
+  5385→        m = re.search(r"\b((?:19|20)\d{2})\b", s or "")
+  5386→        if m:
+  5387→            return (int(m.group(1)), 6, 15)
+  5388→        return (9999, 12, 31)
+  5389→
+  5390→    dated = [s for s in sents if key(s)[0] < 9999]
+  5391→    rest = [s for s in sents if key(s)[0] == 9999]
+  5392→    return sorted(dated, key=key) + rest
+  5393→
+  5394→
+  5395→def _plot_why(facts: str, extra: str, reqs: str, ptype: str = "") -> str:
+  5396→    blob = f"{facts} {extra} {reqs}".lower()
+  5397→    by_type = {
+  5398→        "İş": "işçilik alacaklarının ödenmemesi ve fesih olgusu",
+  5399→        "Alacak": "muaccel alacağın ifa edilmemesi",
+  5400→        "İcra": "icra takibine vaki itiraz",
+  5401→        "İdare": "idari işlemin hukuka aykırılığı",
+  5402→        "Tazminat": "haksız fiil / sözleşmeye aykırılık nedeniyle doğan zarar",
+  5403→        "Ceza": "suçtan zarar görme ve katılma talebi",
+  5404→        "Kira": "kira ilişkisinden kaynaklanan tahliye ve alacak",
+  5405→        "Tüketici": "ayıplı mal veya hizmet",
+  5406→    }
+  5407→    for key, why in by_type.items():
+  5408→        if key in (ptype or ""):
+  5409→            return why
+  5410→    bits: list[str] = []
+  5411→    if any(w in blob for w in ("aldat", "zina", "sadakat")):
+  5412→        bits.append("davalının sadakat yükümlülüğüne aykırı tutumu")
+  5413→    if any(w in blob for w in ("hakaret", "yaralama", "6284", "aile içi şiddet", "fiziksel şiddet")):
+  5414→        bits.append("hakaret ve şiddet olguları")
+  5415→    if any(w in blob for w in ("geçimsiz", "çekilmez", "sarsıl")):
+  5416→        bits.append("ortak hayatın çekilmez hâle gelmesi")
+  5417→    if not bits:
+  5418→        bits.append("somut vakıalara dayalı hukuki uyuşmazlık")
+  5419→    if len(bits) == 1:
+  5420→        return bits[0]
+  5421→    return ", ".join(bits[:-1]) + " ve " + bits[-1]
+  5422→
+  5423→
+  5424→def _prefer_chamber_rows(ptype: str, rows: list[dict]) -> list[dict]:
+  5425→    ranked = _rank_cite_rows(rows)
+  5426→    cites = _prefer_chamber_cites(ptype, [_row_kunye(r) for r in ranked])
+  5427→    by_key = {_row_kunye(r): r for r in ranked}
+  5428→    out = [by_key[c] for c in cites if c in by_key]
+  5429→    if out:
+  5430→        return out
+  5431→    return ranked[:8]
+  5432→
+  5433→
+  5434→def _bind_holdings_to_rows(rows: list[dict], holdings: list[str]) -> list[dict]:
+  5435→    """Gerekçeyi aynı davanın künyesine bağlar; başka karardan cümle yapıştırmaz."""
+  5436→    used: set[int] = set()
+  5437→    for r in rows:
+  5438→        ozet = str(r.get("ozet") or "").strip()
+  5439→        if _dayanak_expl(ozet):
+  5440→            r["ozet"] = _dayanak_expl(ozet)
+  5441→            continue
+  5442→        esas = str(r.get("esas") or "")
+  5443→        karar = str(r.get("karar") or "")
+  5444→        doc = str(r.get("documentId") or "")
+  5445→        for i, h in enumerate(holdings or []):
+  5446→            if i in used or not h:
+  5447→                continue
+  5448→            if esas and esas in h:
+  5449→                clean = _dayanak_expl(h)
+  5450→                if clean:
+  5451→                    r["ozet"] = clean
+  5452→                    used.add(i)
+  5453→                    break
+  5454→            if karar and karar in h:
+  5455→                clean = _dayanak_expl(h)
+  5456→                if clean:
+  5457→                    r["ozet"] = clean
+  5458→                    used.add(i)
+  5459→                    break
+  5460→            if doc and doc in h:
+  5461→                clean = _dayanak_expl(h)
+  5462→                if clean:
+  5463→                    r["ozet"] = clean
+  5464→                    used.add(i)
+  5465→                    break
+  5466→    return rows
+  5467→
+  5468→
+  5469→def _prefer_chamber_cites(ptype: str, cites: list[str]) -> list[str]:
+  5470→    # Yargıtay BGK 2026/1 (RG 30.06.2026 / 33296): daire ihtisasları.
+  5471→    want = {
+  5472→        "Boşanma": r"2\.\s*(Hukuk|HD)|Hukuk Genel Kurulu",
+  5473→        "İş": r"(9|10|22)\.\s*(Hukuk|HD)",
+  5474→        "Alacak": r"(3|6|11)\.\s*(Hukuk|HD)",
+  5475→        "İcra": r"12\.\s*(Hukuk|HD)",
+  5476→        "İdare": r"Danıştay",
+  5477→        "Tazminat": r"4\.\s*(Hukuk|HD)",
+  5478→        "Ceza": r"Ceza",
+  5479→        "Kira": r"3\.\s*(Hukuk|HD)",
+  5480→        "Tüketici": r"(3|13)\.\s*(Hukuk|HD)",
+  5481→    }
+  5482→    if "İdare" in (ptype or ""):
+  5483→        ranked = _prefer_recent_cites(cites)
+  5484→        hit = [
+  5485→            c
+  5486→            for c in ranked
+  5487→            if re.search(r"Danıştay|Anayasa Mahkemesi|\bAYM\b", c, re.I)
+  5488→            and not re.search(r"VDDK|Vergi Dava", c, re.I)
+  5489→        ]
+  5490→        return hit[:8]
+  5491→    pat = next((p for k, p in want.items() if k in (ptype or "")), "")
+  5492→    ranked = _prefer_recent_cites(cites)
+  5493→    if pat:
+  5494→        hit = [c for c in ranked if re.search(pat, c, re.I)]
+  5495→        if hit:
+  5496→            return hit[:8]
+  5497→    return ranked[:8]
+  5498→
+  5499→
+  5500→def _cite_year(row_or_text: dict | str) -> int:
+  5501→    if isinstance(row_or_text, dict):
+  5502→        blob = " ".join(
+  5503→            str(row_or_text.get(k) or "")
+  5504→            for k in ("tarih", "esas", "karar", "kaynak", "kunye")
+  5505→        )
+  5506→    else:
+  5507→        blob = str(row_or_text or "")
+  5508→    years = [int(x) for x in re.findall(r"\b(20\d{2}|19\d{2})\b", blob)]
+  5509→    return max(years) if years else 0
+  5510→
+  5511→
+  5512→def _prefer_recent_cites(cites: list[str]) -> list[str]:
+  5513→    recent = [c for c in cites if _cite_year(c) >= 2020]
+  5514→    pool = recent or list(cites)
+  5515→    return sorted(pool, key=_cite_year, reverse=True)
+  5516→
+  5517→
+  5518→def _rank_cite_rows(rows: list[dict]) -> list[dict]:
+  5519→    recent = [r for r in rows if _cite_year(r) >= 2020]
+  5520→    pool = recent or list(rows)
+  5521→    return sorted(pool, key=lambda r: (_cite_year(r), 1 if r.get("ozet") else 0), reverse=True)
+  5522→
+  5523→
+  5524→def _prefer_family_cites(cites: list[str]) -> list[str]:
+  5525→    return _prefer_chamber_cites("Boşanma", cites)
+  5526→
+  5527→
+  5528→def _clean_holding(text: str) -> str:
+  5529→    if _is_portal_junk(text or ""):
+  5530→        return ""
+  5531→    t = re.sub(r"\s+", " ", _strip_portal_junk(text or "")).strip()
+  5532→    t = re.sub(r"^(SONUÇ|HÜKÜM|GEREKÇE)\s*[:.]?\s*", "", t, flags=re.I)
+  5533→    t = re.sub(r"(?i)işbu (karar|dava)[^.]*\.", "", t)
+  5534→    t = t.strip(" .;")
+  5535→    if len(t) < 40:
+  5536→        return ""
+  5537→    cut = t[:240]
+  5538→    if "." in cut:
+  5539→        cut = cut.rsplit(".", 1)[0]
+  5540→    return cut.strip() + "."
+  5541→
+  5542→
+  5543→_ADVERSE_HOLD = re.compile(
+  5544→    r"(?i)davan[ıi]n reddi|davan[ıi]n redine|incelenmesine (imkan|imkân) bulunmad|"
+  5545→    r"kesin ve y[uü]r[uü]t[uü]lebilir.{0,50}olmad[ıi][gğ]|"
+  5546→    r"14/3|15/1-b|esas[ıi]n[ıi]n incelenmesine"
+  5547→)
+  5548→
+  5549→
+  5550→def _holding_helps(text: str, ptype: str, blob: str = "") -> bool:
+  5551→    t = text or ""
+  5552→    if not t or _ADVERSE_HOLD.search(t):
+  5553→        return False
+  5554→    if "İdare" in (ptype or ""):
+  5555→        if re.search(r"(?i)7315|g[uü]venlik soru[sş]tur|sebep unsur|soyut gerek[cç]e|"
+  5556→                     r"atama uygunluk|[oö]l[cç][uü]l[uü]l[uü]k|iptal", t):
+  5557→            return True
+  5558→        return "hukuka aykırı" in t.lower()
+  5559→    return True
+  5560→
+  5561→
+  5562→def _filter_cites(form: dict, cites: list[str], holdings: list[str]) -> tuple[list[str], list[str]]:
+  5563→    ptype = str(form.get("petitionType") or "")
+  5564→    blob = _source_blob(form)
+  5565→    cites = _prefer_chamber_cites(ptype, cites)
+  5566→    good_h = [h for h in (holdings or []) if _holding_helps(h, ptype, blob)]
+  5567→    good_c: list[str] = []
+  5568→    for c in cites:
+  5569→        if _ADVERSE_HOLD.search(c):
+  5570→            continue
+  5571→        good_c.append(c)
+  5572→    if not good_h:
+  5573→        good_h = [h for h in (holdings or []) if not _ADVERSE_HOLD.search(h or "")]
+  5574→    if "İdare" in ptype and not good_h:
+  5575→        return [], []
+  5576→    return good_c[:4], good_h[:4]
+  5577→
+  5578→
+  5579→def _emsal_in_flow(cites: list[str], holdings: list[str], ptype: str, form: dict | None = None) -> str:
+  5580→    if form:
+  5581→        cites, holdings = _filter_cites(form, cites, holdings)
+  5582→    else:
+  5583→        cites = _prefer_chamber_cites(ptype, cites)
+  5584→        holdings = [h for h in (holdings or []) if not _ADVERSE_HOLD.search(h or "")]
+  5585→    if not cites:
+  5586→        if "İdare" in (ptype or ""):
+  5587→            return (
+  5588→                "Danıştay’ın yerleşik uygulamasına göre güvenlik soruşturmasına dayanan olumsuz "
+  5589→                "işlemin sebep unsuru somut, denetime elverişli ve ölçülü gerekçeye dayanmalıdır. "
+  5590→                "Soyut “görevlendirmeye engel veri” ifadesi bu ölçütü karşılamaz. "
+  5591→                "Esas ve karar numarası çekilmemişse yazılmaz."
+  5592→            )
+  5593→        return ""
+  5594→    pieces: list[str] = []
+  5595→    for i, cite in enumerate(cites[:2]):
+  5596→        hold = _clean_holding(holdings[i]) if i < len(holdings) else ""
+  5597→        if hold and not _holding_helps(hold, ptype):
+  5598→            hold = ""
+  5599→        if "Boşanma" in ptype:
+  5600→            sent = (
+  5601→                f"{cite} sayılı kararda, evlilik birliğinin temelinden sarsılması ve ortak hayatın "
+  5602→                "eşlerden biri bakımından çekilmez hâle gelmesi hâlinde boşanmaya hükmedileceği kabul edilmiştir."
+  5603→            )
+  5604→        elif "İş" in ptype:
+  5605→            sent = (
+  5606→                f"{cite} sayılı kararda, 4857 sayılı Kanun m. 32 uyarınca ücretin zamanında ödenmesi "
+  5607→                "gerektiği ve işçilik alacağının haksız fiil tazminatı değil iş sözleşmesinden doğan "
+  5608→                "alacak olduğu kabul edilmiştir."
+  5609→            )
+  5610→        elif "İdare" in ptype:
+  5611→            sent = (
+  5612→                f"{_kunye_tr(cite)} sayılı kararda, idari işlemin sebep unsurunun somut, denetime "
+  5613→                "elverişli ve ölçülü gerekçeye dayanması gerektiği kabul edilmiştir."
+  5614→            )
+  5615→        else:
+  5616→            sent = f"{cite} sayılı karardaki ilke somut olaya da uygundur."
+  5617→        if hold and not re.search(r"HTTP |alınamadı|error", hold, re.I):
+  5618→            h = hold[0].lower() + hold[1:] if hold[:1].isupper() else hold
+  5619→            sent += f" Anılan kararın gerekçesinde {h}"
+  5620→            if not sent.endswith("."):
+  5621→                sent += "."
+  5622→        pieces.append(sent)
+  5623→    lead = (
+  5624→        "Danıştay’ın yerleşik uygulaması da aynı yöndedir. "
+  5625→        if "İdare" in (ptype or "")
+  5626→        else "Yargıtay’ın yerleşik uygulaması da aynı yöndedir. "
+  5627→    )
+  5628→    if len(pieces) > 1:
+  5629→        lead += pieces[0] + " Aynı doğrultuda " + pieces[1][0].lower() + pieces[1][1:]
+  5630→    else:
+  5631→        lead += pieces[0]
+  5632→    return lead + " Bu ilkeler, somut olaya da uygulanmalıdır."
+  5633→
+  5634→
+  5635→def _pick_sents(sents: list[str], keys: tuple[str, ...]) -> list[str]:
+  5636→    return [s for s in sents if any(k in s.lower() for k in keys)]
+  5637→
+  5638→
+  5639→def _labor_narrative(form: dict, pack: dict, research: str) -> str:
+  5640→    facts = _field(form, "caseSummary", "case_summary")
+  5641→    extra = _field(form, "extraInstructions", "extra")
+  5642→    reqs = _field(form, "requests")
+  5643→    sents = _chrono_sents(_all_fact_sentences(facts, extra))
+  5644→    cites = _prefer_chamber_cites("İş Davası", _extract_cites(research))
+  5645→    mem = _CASE_MEMORY or _load_case_memory()
+  5646→    holds = list(mem.get("holdings") or _extract_ozetler(research) or [])
+  5647→    blocks: list[str] = []
+  5648→    n = 1
+  5649→
+  5650→    def add(title: str, body: str) -> None:
+  5651→        nonlocal n
+  5652→        body = reconcile_date_span(_strip_disclaimers(_strip_book_subs(body)))
+  5653→        if not body or len(body) < 24:
+  5654→            return
+  5655→        blocks.append(f"{n}- {title.rstrip(' :')}:\n\n{body}")
+  5656→        n += 1
+  5657→
+  5658→    dayanak = _hukuki_nedenler_line(form, pack)
+  5659→    add(
+  5660→        "Davanın hukuki dayanağı",
+  5661→        "İşbu dava, iş sözleşmesinden / iş ilişkisinden doğan işçilik alacağıdır; "
+  5662→        "haksız fiile dayalı maddi veya manevi tazminat davası değildir. "
+  5663→        f"Dayanak: {dayanak} "
+  5664→        "Görevli mahkeme İş Mahkemesi’dir. "
+  5665→        "Ücret kural olarak ayda bir ödenir; gününde ödenmeyen ücrete 4857 m. 34 uyarınca "
+  5666→        "bankalarca mevduata uygulanan en yüksek faiz yürütülür. "
+  5667→        "Alacak kalemi henüz tam belirlenememişse talep HMK m. 107 anlamında belirsiz "
+  5668→        "alacak olarak ileri sürülür; tutar formda yoksa uydurulmaz.",
+  5669→    )
+  5670→    work = _pick_sents(
+  5671→        sents,
+  5672→        ("iş", "ücret", "maaş", "çalış", "tarih", "işveren", "iş yeri", "pozisyon", "görev", "sgk"),
+  5673→    )
+  5674→    if work:
+  5675→        add(
+  5676→            "İş ilişkisi ve süre",
+  5677→            _weave_facts(work)
+  5678→            + " Çalışma süresi ile ödenmeyen ücret dönemi aynı şey değildir. "
+  5679→            "Hangi ayların ödenmediği ve fesih şekli formda yazılmamışsa uydurulmaz.",
+  5680→        )
+  5681→    unpaid = _pick_sents(sents, ("öden", "alamad", "ücret", "maaş", "alacak", "aylık"))
+  5682→    leftover = [s for s in sents if s not in work]
+  5683→    plot = unpaid or leftover or sents
+  5684→    if plot:
+  5685→        add(
+  5686→            "Ödenmeyen ücret alacağı",
+  5687→            _weave_facts(plot)
+  5688→            + " Talep, maddi/manevi tazminat değil ücret alacağıdır. "
+  5689→            "Net/brüt ücret ve ödenmeyen ay sayısı formda yoksa hesap uydurulmaz.",
+  5690→        )
+  5691→    emsal = _emsal_in_flow(cites, holds, "İş Davası", form)
+  5692→    add(
+  5693→        "Hukuki nitelendirme",
+  5694→        "Açıklanan vakıalar, 4857 sayılı Kanun m. 32 uyarınca muaccel ücret alacağını "
+  5695→        "ve 7036 sayılı Kanun m. 5 uyarınca İş Mahkemesi’nin görevini göstermektedir. "
+  5696→        + (emsal or "Yargıtay 9. ve 22. Hukuk Dairelerinin yerleşik uygulaması da bu yöndedir."),
+  5697→    )
+  5698→    _add_usul_vakia(add, form)
+  5699→    return "\n\n".join(blocks)
+  5700→
+  5701→
+  5702→def _idare_fact_bits(blob: str) -> dict[str, str]:
+  5703→    t = blob or ""
+  5704→    out = {"para": "", "yil": "", "aile": False, "denetim": "", "ozet_madde": ""}
+  5705→    m = re.search(r"(\d{1,3}(?:\.\d{3})*)\s*TL\s+adli para", t, re.I)
+  5706→    if not m:
+  5707→        m = re.search(r"adli para[^\d]{0,28}(\d{1,3}(?:\.\d{3})*)\s*TL", t, re.I)
+  5708→    if m:
+  5709→        out["para"] = m.group(1) + " TL"
+  5710→    if re.search(r"(?i)aile\s+i[cç]i|aile çevresi|münferit", t):
+  5711→        out["aile"] = True
+  5712→    m = re.search(r"(?:üzerinden\s+)?(?:yaklaşık\s+)?(\d)\s+yıl(?!\s*denetim)", t, re.I)
+  5713→    if m:
+  5714→        out["yil"] = m.group(1)
+  5715→    m = re.search(r"(\d)\s+yıl(?:lık)?\s+denetim", t, re.I)
+  5716→    if m:
+  5717→        out["denetim"] = m.group(1)
+  5718→    mem = _CASE_MEMORY or _load_case_memory()
+  5719→    ozets = []
+  5720→    for s in (mem.get("statutes") or [])[:4]:
+  5721→        if isinstance(s, dict) and s.get("ok") and s.get("label") and s.get("ozet"):
+  5722→            ozets.append(f"{s['label']}: {str(s['ozet'])[:220].rstrip(' .')}." )
+  5723→    out["ozet_madde"] = " ".join(ozets[:3])
+  5724→    return out
+  5725→
+  5726→
+  5727→def _acm_facts(blob: str) -> dict[str, str]:
+  5728→    out = {"court": "", "esas": "", "karar": "", "date": ""}
+  5729→    m = re.search(r"((?:Erzurum|Ankara|İstanbul|İzmir|[A-ZÇĞİÖŞÜ][a-zçğıöşü]+)\s+\d+\.\s*Asliye Ceza Mahkemesi)", blob or "", re.I)
+  5730→    if m:
+  5731→        out["court"] = re.sub(r"\s+", " ", m.group(1)).strip()
+  5732→    m = re.search(
+  5733→        r"(\d{4})\s*/\s*(\d+)\s*(?:E(?:sas)?\.?|Esas)[^\d]{0,28}(\d{4})\s*/\s*(\d+)\s*(?:K(?:arar)?\.?|Karar)",
+  5734→        blob or "",
+  5735→        re.I,
+  5736→    )
+  5737→    if m:
+  5738→        out["esas"] = f"{m.group(1)}/{m.group(2)}"
+  5739→        out["karar"] = f"{m.group(3)}/{m.group(4)}"
+  5740→    else:
+  5741→        m = re.search(r"(\d{4})\s*/\s*(\d+)\s*E[^\d]{0,16}(\d{4})\s*/\s*(\d+)\s*K", blob or "", re.I)
+  5742→        if m:
+  5743→            out["esas"] = f"{m.group(1)}/{m.group(2)}"
+  5744→            out["karar"] = f"{m.group(3)}/{m.group(4)}"
+  5745→    m = re.search(r"(?:karar tarihi|karar tarihi:)\s*(\d{1,2}[./]\d{1,2}[./]\d{4})", blob or "", re.I)
+  5746→    if m:
+  5747→        out["date"] = m.group(1)
+  5748→    return out
+  5749→
+  5750→
+  5751→def _idare_narrative(form: dict, pack: dict, research: str) -> str:
+  5752→    blob = _source_blob(form)
+  5753→    davaci, davali = _resolved_parties(form)
+  5754→    davaci = _strip_party_label(davaci) or "müvekkil"
+  5755→    if re.search(r"(?i)^ad\s*soyad$", davaci.strip()):
+  5756→        people = _extract_person_names(blob)
+  5757→        davaci = next((p for p in people if not re.search(r"(?i)^ad\s*soyad$", p)), "müvekkil")
+  5758→    davali = _short_admin(_strip_party_label(davali) or "davalı idare") or "davalı idare"
+  5759→    act = str(form.get("_idare_act") or _extract_idare_act(form) or "iptali istenen idari işlem")
+  5760→    acm = _acm_facts(blob)
+  5761→    hagb = bool(re.search(r"(?i)HAGB|hükmün açıklanmasının geri", blob))
+  5762→    beraat = bool(re.search(r"(?i)hakaret.{0,60}beraat|beraat.{0,40}hakaret", blob))
+  5763→    yaralama = bool(re.search(r"(?i)kasten yaralama", blob))
+  5764→    kadro = bool(re.search(r"(?i)infaz ve koruma|3\.?500|sözleşmeli personel", blob))
+  5765→    cites, holds = _filter_cites(
+  5766→        form,
+  5767→        (_CASE_MEMORY or _load_case_memory()).get("cites") or _extract_cites(research),
+  5768→        (_CASE_MEMORY or _load_case_memory()).get("holdings") or _extract_ozetler(research),
+  5769→    )
+  5770→    emsal = _emsal_in_flow(cites, holds, "İdare Hukuku", form)
+  5771→    blocks: list[tuple[str, list[str]]] = []
+  5772→
+  5773→    def add(title: str, body: str) -> None:
+  5774→        body = re.sub(r"\s+", " ", (body or "")).strip()
+  5775→        if len(body) < 40:
+  5776→            return
+  5777→        title = title.rstrip(" :")
+  5778→        if blocks and blocks[-1][0] == title:
+  5779→            blocks[-1][1].append(body)
+  5780→        else:
+  5781→            blocks.append((title, [body]))
+  5782→
+  5783→    bits = _idare_fact_bits(blob)
+  5784→    labs = _statute_labels()
+  5785→    dayanak = ", ".join(labs) if labs else "2577 sayılı İYUK m. 2, m. 3, m. 7 ve Anayasa m. 36, m. 40, m. 70"
+  5786→    dayanak_body = (
+  5787→        f"İşbu dava, {dayanak} uyarınca {act} iptali istemiyle açılmıştır. "
+  5788→        "Dilekçe İYUK m. 3 şekil kurallarına uygundur. HMK m. 119 idari yargıda uygulanmaz. "
+  5789→        "Anayasa’nın 36. maddesindeki hak arama hürriyeti, 40. maddesindeki etkili başvuru "
+  5790→        "ve 70. maddesindeki kamu hizmetine girme hakkı somut uyuşmazlığın anayasal zeminidir."
+  5791→    )
+  5792→    if bits.get("ozet_madde"):
+  5793→        dayanak_body += " Çekilen resmi madde özetleri: " + bits["ozet_madde"]
+  5794→    hire = _extract_admin_name(blob)
+  5795→    if hire and _looks_public(davali) and _short_admin(hire).split("(")[0].strip() not in davali:
+  5796→        kadro_idare = _short_admin(hire)
+  5797→    else:
+  5798→        kadro_idare = davali
+  5799→    act_noun = re.sub(r"(?i)\s+işlemin$", " işlem", act).strip()
+  5800→    if kadro:
+  5801→        add(
+  5802→            "DAVANIN KONUSU: DAVA KONUSU İŞLEMİN TESPİTİ",
+  5803→            f"Müvekkil, {kadro_idare} bünyesinde ilan edilen sözleşmeli infaz ve koruma "
+  5804→            "memuru alımı kapsamında görevlendirilmek üzere başvurmuştur. Güvenlik soruşturması "
+  5805→            "ve arşiv araştırması 7315 sayılı Kanun uyarınca yapılmıştır. Müvekkilin bu alıma "
+  5806→            "ilişkin hukuki yararı, işlemin görevlendirmeyi engellemesiyle somutlaşmıştır.",
+  5807→        )
+  5808→    add(
+  5809→        "DAVANIN KONUSU: DAVA KONUSU İŞLEMİN TESPİTİ",
+  5810→        f"İptal davasının konusu, {davali} tarafından tesis edilen {act_noun}dir. "
+  5811→        "İşlem, 7315 sayılı Kanun kapsamında oluşan değerlendirme üzerine, elde edilen verinin "
+  5812→        "görevlendirmeye engel nitelikte olduğu gerekçesine dayandırılmıştır. "
+  5813→        "Dava açma süresi İYUK m. 7 (ve varsa m. 11) çerçevesinde tebliğden itibaren hesaplanır. "
+  5814→        "İşlem, idarenin tek yanlı, kesin ve yürütülmesi gereken tasarrufudur.",
+  5815→    )
+  5816→    ceza = (
+  5817→        f"{(acm['court'] + ' ').lstrip()}"
+  5818→        + (f"{acm['esas']} E. " if acm["esas"] else "")
+  5819→        + (f"{acm['karar']} K. " if acm["karar"] else "")
+  5820→        + (f"({acm['date']}) " if acm["date"] else "")
+  5821→    ).strip()
+  5822→    if ceza or hagb or yaralama or beraat:
+  5823→        ceza_bits = [
+  5824→            "Ceza mahkemesi kararı idari işlem değildir; varsa yalnızca sebep unsurunda "
+  5825→            "değerlendirilen bir olgudur."
+  5826→        ]
+  5827→        if ceza:
+  5828→            ceza_bits.append(f"Dosyada {ceza} sayılı yargılama bulunmaktadır.")
+  5829→        if yaralama:
+  5830→            ceza_bits.append("Yargılamada basit kasten yaralama vakıası yer almaktadır.")
+  5831→        if beraat:
+  5832→            ceza_bits.append("Hakaret isnadı yönünden beraat kararı verilmiştir.")
+  5833→        if hagb:
+  5834→            ceza_bits.append(
+  5835→                "Basit kasten yaralama yönünden hükmün açıklanmasının geri bırakılmasına "
+  5836→                "karar verilmiştir. HAGB, CMK m. 231 uyarınca mahkûmiyet hükmü gibi "
+  5837→                "sonuç doğurmaz; tek başına kamu görevine alınmamayı zorunlu kılmaz."
+  5838→            )
+  5839→        add("MÜVEKKİL HAKKINDAKİ CEZA DOSYASININ HUKUKİ NİTELİĞİ", " ".join(ceza_bits))
+  5840→    add(
+  5841→        "SEBEP UNSURU YÖNÜNDEN HUKUKA AYKIRILIK",
+  5842→        "İşlem gerekçesi, elde edilen verinin görevlendirmeye engel olduğu yönündedir; "
+  5843→        "hangi somut olgunun, belgenin ve ölçütün esas alındığı açıklanmamıştır. "
+  5844→        "Takdir yetkisi, idareye gerekçesiz ve denetime kapalı atamama yetkisi vermez. "
+  5845→        "Soyut güvenlik soruşturması işlemi, sebep unsuru yönünden hukuka aykırıdır. "
+  5846→        "7315 sayılı Kanun, verinin ilgiliye ve yargıya denetime elverişli biçimde "
+  5847→        "somutlaştırılmasını gerektirir.",
+  5848→    )
+  5849→    add(
+  5850→        "ŞEKİL UNSURU YÖNÜNDEN HUKUKA AYKIRILIK: GEREKÇESİZLİK",
+  5851→        "İdari işlemlerde gerekçe, hukuk devleti ilkesinin (Anayasa m. 2) ve etkili yargısal "
+  5852→        "denetimin (Anayasa m. 125) gereğidir. Mahkeme, işlemin sebebini ancak gerekçeyi "
+  5853→        "görerek denetleyebilir; müvekkil de savunmasını ancak dayanağı bilerek kurabilir. "
+  5854→        "Dava konusu belgede yalnızca “elde edilen verinin görevlendirmeye engel olduğu” "
+  5855→        "ifadesi vardır. Hangi olgu, kaynak, madde ve ölçütün kullanıldığı yazılmamıştır. "
+  5856→        "Bu soyutluk, Anayasa m. 36’daki hak arama hürriyetini ve Anayasa m. 40’taki etkili "
+  5857→        "başvuru hakkını işlemez kılar. Gerekçesiz işlem şekil unsuru yönünden sakattır.",
+  5858→    )
+  5859→    olcu = (
+  5860→        "HAGB uygulanmış bir kararın, görevlendirmeye kesin engel sayılması ölçülülük ilkesine aykırıdır. "
+  5861→        "Elverişlilik, gereklilik ve orantılılık birlikte aranır; soyut “engel teşkil eder” ifadesi bunları karşılamaz."
+  5862→    )
+  5863→    if bits.get("yil") or bits.get("para") or bits.get("aile"):
+  5864→        pieces = []
+  5865→        if bits.get("aile"):
+  5866→            pieces.append("olayın aile çevresinde münferit bir tartışmadan kaynaklanması")
+  5867→        if bits.get("yil"):
+  5868→            pieces.append(f"üzerinden yaklaşık {bits['yil']} yıl geçmiş bulunması")
+  5869→        if bits.get("para"):
+  5870→            pieces.append(f"yaptırımın {bits['para']} adli para cezası ile sınırlı kalması")
+  5871→        if bits.get("denetim"):
+  5872→            pieces.append(f"{bits['denetim']} yıl denetim süresi öngörülmesi")
+  5873→        olcu = (
+  5874→            "Ölçülülük bakımından " + ", ".join(pieces) + " birlikte değerlendirilmelidir. "
+  5875→            + olcu
+  5876→        )
+  5877→    add("ÖLÇÜLÜLÜK İLKESİ", olcu +
+  5878→        " Basit kasten yaralama olgusunun infaz ve koruma memurluğu görevinin güncel ve somut riski ile "
+  5879→        "bağlantısı işlemde gösterilmemiştir. İdare bu bağlantıyı nesnel biçimde kurmak zorundadır.")
+  5880→    add(
+  5881→        "MASUMİYET KARİNESİ VE KAMU HİZMETİNE GİRME HAKKI",
+  5882→        "HAGB’nin arşiv araştırmasında elde edilmesi ile bu kaydın otomatik olarak kamu görevine "
+  5883→        "engel sayılması aynı şey değildir. Anayasa m. 38 anlamında masumiyet karinesi, HAGB’nin "
+  5884→        "hiç değerlendirilemeyeceği anlamına gelmez; ancak idare bireyselleştirilmiş, güncel ve "
+  5885→        "görevle bağlantılı bir değerlendirme yapmak zorundadır. Hakaret isnadından beraat, "
+  5886→        "olumsuz değerlendirmenin otomatik gerekçesi olamaz.",
+  5887→    )
+  5888→    add(
+  5889→        "SEBEP UNSURU YÖNÜNDEN HUKUKA AYKIRILIK",
+  5890→        "İşlem tesis tarihinde gösterilmeyen somut sebep, dava dilekçesine cevapta "
+  5891→        "“aslında şu ceza dosyasıdır” denilerek sonradan ikame edilemez. Sebep unsuru, "
+  5892→        "işlemin kurulduğu andaki gerekçe ile denetlenir. İdarenin yargılama aşamasında "
+  5893→        "yeni gerekçe üretmesi, gerekçesizlik sakatlığını gidermez.",
+  5894→    )
+  5895→    add(
+  5896→        "YÜRÜTMENİN DURDURULMASI TALEBİ",
+  5897→        "Değerlendirme komisyonuna sunulan bilgi ve belgeler, güvenlik soruşturması raporu, "
+  5898→        "tutanaklar ve dayanak verilerin mahkeme aracılığıyla celbi talep olunur. Kişisel veri "
+  5899→        "veya gizlilik, yargısal denetimi ortadan kaldırmaz; mahkeme gizli evrakı inceleyerek "
+
+[showing lines 5300-5899 of 7858; use offset=5900 with limit to continue reading]
