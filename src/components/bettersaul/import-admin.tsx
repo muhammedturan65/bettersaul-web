@@ -18,6 +18,7 @@ import {
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
 import { Progress } from '@/components/ui/progress'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
@@ -61,6 +62,15 @@ export function ImportAdmin() {
   const [reindexResult, setReindexResult] = useState<{ updated: number; total: number; skipped: number; message?: string } | null>(null)
   const [expandedLog, setExpandedLog] = useState<string | null>(null)
 
+  // Real source import state (Python service)
+  const [realSource, setRealSource] = useState('yargitay')
+  const [realMax, setRealMax] = useState('')
+  const [realBackend, setRealBackend] = useState('auto')
+  const [realStarting, setRealStarting] = useState(false)
+  const [realError, setRealError] = useState('')
+  const [realJobs, setRealJobs] = useState<any[]>([])
+  const [realServiceStatus, setRealServiceStatus] = useState<'available' | 'unavailable' | 'unknown'>('unknown')
+
   async function refresh() {
     try {
       const res = await fetch('/api/import')
@@ -68,6 +78,52 @@ export function ImportAdmin() {
       setJobs(data.jobs || [])
     } catch {} finally {
       setLoading(false)
+    }
+    // Also refresh Python service jobs
+    refreshRealJobs()
+  }
+
+  async function refreshRealJobs() {
+    try {
+      const res = await fetch('/api/import/real')
+      const data = await res.json()
+      if (data.available) {
+        setRealServiceStatus('available')
+        setRealJobs(data.jobs || [])
+      } else {
+        setRealServiceStatus('unavailable')
+        setRealJobs([])
+      }
+    } catch {
+      setRealServiceStatus('unavailable')
+    }
+  }
+
+  async function startRealImport() {
+    setRealStarting(true)
+    setRealError('')
+    try {
+      const res = await fetch('/api/import/real', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'start',
+          source: realSource,
+          maxDocuments: realMax ? parseInt(realMax) : undefined,
+          embeddingBackend: realBackend,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setRealError(data.error || 'Başlatma başarısız')
+      } else {
+        // Refresh list after a short delay
+        setTimeout(refreshRealJobs, 1000)
+      }
+    } catch (e: any) {
+      setRealError(e.message)
+    } finally {
+      setRealStarting(false)
     }
   }
 
@@ -202,6 +258,130 @@ export function ImportAdmin() {
             {reindexResult.message || `${reindexResult.updated} / ${reindexResult.total} karar indekslendi (TF-IDF + hashing v1)`}
           </div>
         )}
+      </Card>
+
+      {/* Real Source Import (Python service) */}
+      <Card className="border-border/60 p-5">
+        <div className="flex items-center gap-2 pb-3 mb-3 border-b border-border/60">
+          <Database className="w-4 h-4 text-accent" />
+          <h3 className="text-sm font-semibold">Gerçek Kaynak Import (Python Service)</h3>
+          <Badge variant="outline" className="text-[10px] ml-auto">
+            multilingual-e5-large
+          </Badge>
+        </div>
+        <div className="space-y-3">
+          <p className="text-[11px] text-muted-foreground">
+            Python source connector service'ini kullanarak <b>9M+ gerçek kararı</b> Yargıtay/Danıştay/Emsal portallarından scrape eder,
+            multilingual-e5-large (1024-dim) embedding hesaplar ve PostgreSQL + pgvector'a yazar.
+            Demo mod (yukarıdaki) sadece mock veri üretir.
+          </p>
+
+          <div className="grid sm:grid-cols-3 gap-2">
+            <Select value={realSource} onValueChange={setRealSource}>
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(SOURCE_INFO).map(([k, v]) => (
+                  <SelectItem key={k} value={k}>
+                    <div>
+                      <div className="font-medium text-xs">{v.label}</div>
+                      <div className="text-[10px] text-muted-foreground">{v.total.toLocaleString('tr-TR')} karar</div>
+                    </div>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              type="number"
+              placeholder="Max karar (boş=sınırsız)"
+              value={realMax}
+              onChange={(e) => setRealMax(e.target.value)}
+              className="h-9 text-xs"
+            />
+            <Select value={realBackend} onValueChange={setRealBackend}>
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto">Auto (e5 → tfidf)</SelectItem>
+                <SelectItem value="e5">multilingual-e5-large (1024-dim)</SelectItem>
+                <SelectItem value="openai">OpenAI text-embedding-3-large (1536-dim)</SelectItem>
+                <SelectItem value="tfidf">TF-IDF fallback (256-dim)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={startRealImport}
+              disabled={realStarting}
+              className="h-9 brass-bar text-sidebar hover:opacity-90 font-semibold text-xs"
+            >
+              {realStarting ? (
+                <>
+                  <Loader2 className="w-3 h-3 mr-1.5 animate-spin" />
+                  Başlatılıyor
+                </>
+              ) : (
+                <>
+                  <Plus className="w-3 h-3 mr-1.5" />
+                  Gerçek Import Başlat
+                </>
+              )}
+            </Button>
+            {realServiceStatus === 'available' && (
+              <Badge variant="outline" className="text-[10px] text-emerald-600 border-emerald-300">
+                <CheckCircle2 className="w-3 h-3 mr-1" />
+                Python service hazır
+              </Badge>
+            )}
+            {realServiceStatus === 'unavailable' && (
+              <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-300">
+                Python service yok (mock mod)
+              </Badge>
+            )}
+          </div>
+
+          {realError && (
+            <div className="px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-xs text-amber-700 dark:text-amber-300">
+              <AlertCircle className="w-3.5 h-3.5 inline mr-1.5" />
+              {realError}
+            </div>
+          )}
+
+          {realJobs.length > 0 && (
+            <div className="space-y-1.5 mt-2">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                Python Service Job'ları
+              </div>
+              {realJobs.map((job: any) => (
+                <div key={job.job_id} className="px-3 py-2 rounded-md border border-border/60 bg-muted/30 text-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-[10px]">{job.source}</Badge>
+                      <span className={cn(
+                        'text-[10px] font-medium',
+                        job.status === 'completed' ? 'text-emerald-600' :
+                        job.status === 'failed' || job.status === 'cancelled' ? 'text-red-600' :
+                        'text-amber-600'
+                      )}>
+                        {job.status}
+                      </span>
+                      <span className="text-[10px] text-muted-foreground font-mono">{job.job_id.slice(-12)}</span>
+                    </div>
+                    <span className="font-mono text-[10px]">
+                      {job.processed}/{job.total || '?'} ({job.progress || 0}%)
+                    </span>
+                  </div>
+                  {job.current_step && (
+                    <div className="text-[10px] text-muted-foreground mt-1">{job.current_step}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* Jobs list */}

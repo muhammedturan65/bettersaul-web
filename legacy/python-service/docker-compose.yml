@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  # ─── PostgreSQL + pgvector ─────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: bettersaul-postgres
+    environment:
+      POSTGRES_DB: bettersaul
+      POSTGRES_USER: bettersaul
+      POSTGRES_PASSWORD: bettersaul
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bettersaul"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis (rate limiter + cache) ──────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: bettersaul-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Python Source Connector Service ───────────────────────
+  python-service:
+    build: .
+    container_name: bettersaul-python-service
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=postgresql://bettersaul:bettersaul@postgres:5432/bettersaul
+      - REDIS_URL=redis://redis:6379
+      - EMBEDDING_BACKEND=${EMBEDDING_BACKEND:-e5}
+      - CORS_ORIGINS=http://localhost:3000
+      - DEBUG=1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./bettersaul_sources:/app/bettersaul_sources
+      - huggingface_cache:/root/.cache/huggingface
+    # GPU support (uncomment if NVIDIA GPU available)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+volumes:
+  pgdata:
+  huggingface_cache:
